@@ -1,0 +1,17 @@
+defaults:
+  - drqv2
+  - _self_
+
+num_steps: 10000
+batch_size: 32
+updates_per_step: 1
+checkpoint_dir: ./runs/drqv2_sanity
+checkpoint_frequency: 5000
+agent:
+  num_expl_steps: 1000
+replay:
+  capacity: 20000
+  commit_interval: 1000
+evaluation:
+  frequency: 5000
+  episodes: 3

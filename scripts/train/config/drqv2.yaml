@@ -1,0 +1,65 @@
+defaults:
+  - _self_
+
+hydra:
+  job:
+    chdir: false
+
+env: MountainCarContinuous-v0
+env_kwargs: {}
+seed: 1
+device: cuda:0
+image_size: 84
+frame_stack: 1
+max_episode_steps: 0
+num_steps: 100000
+batch_size: 256
+updates_per_step: 1
+update_frequency: 1
+nstep: 1
+checkpoint_dir: ./runs/drqv2
+checkpoint_frequency: 10000
+resume: null
+evaluation_only: false
+
+agent:
+  lr: 0.0001
+  feature_dim: 50
+  hidden_dim: 1024
+  critic_target_tau: 0.01
+  discount: 0.99
+  stddev: 0.2
+  stddev_final: 0.1
+  stddev_schedule_steps: 500000
+  stddev_clip: 0.3
+  num_expl_steps: 2000
+  augmentation_pad: 4
+
+replay:
+  capacity: 50000
+  commit_interval: 1000
+
+representation:
+  loss: none
+  weight: 1.0
+  horizon: 1
+  temperature: 0.1
+  projection_dim: 128
+  hidden_dim: 256
+  sigreg_weight: 0.09
+  lewm_hidden_dim: 2048
+
+evaluation:
+  frequency: 10000
+  episodes: 5
+
+logging:
+  frequency: 1000
+
+wandb:
+  enable: false
+  project: stable-worldmodel-rl
+  name: null
+  group: null
+  tags: []
+  run_id: null

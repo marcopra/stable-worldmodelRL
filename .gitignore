@@ -212,6 +212,7 @@ logs/
 **/__pycache__/**
 **/*.pyc
 !scripts/minerl.sh
+!scripts/rl/local_*.sh
 
 outputs/
 multirun/
@@ -230,3 +231,6 @@ results/
 local_scripts/
 CLAUDE.md
 uv.lock
+output/
+TACO
+runs/

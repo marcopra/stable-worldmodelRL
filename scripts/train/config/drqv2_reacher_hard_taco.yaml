@@ -1,0 +1,61 @@
+defaults:
+  - drqv2
+  - _self_
+
+# TACO's `reacher_hard` inherits the medium task preset: 3.1M physics frames.
+# With action_repeat=2 in ReacherDMControlWrapper, this is 1.55M agent steps.
+env: swm/ReacherDMControl-v0
+env_kwargs:
+  task: hard
+frame_stack: 3
+max_episode_steps: 500
+num_steps: 1550000
+batch_size: 1024
+updates_per_step: 1
+update_frequency: 2
+nstep: 3
+checkpoint_dir: ./runs/drqv2_reacher_hard_taco
+checkpoint_frequency: 1550000
+
+agent:
+  lr: 0.0001
+  feature_dim: 50
+  hidden_dim: 1024
+  critic_target_tau: 0.01
+  discount: 0.99
+  stddev: 1.0
+  stddev_final: 0.1
+  stddev_schedule_steps: 500000
+  stddev_clip: 0.3
+  num_expl_steps: 2000
+  augmentation_pad: 4
+
+replay:
+  # The original TACO config uses 1M entries. The local replay stores the
+  # three-frame 84px stacks in RAM; 100k fits while two jobs share 62 GiB RAM.
+  capacity: 100000
+  commit_interval: 1000
+
+representation:
+  loss: none
+  weight: 1.0
+  horizon: 3
+  temperature: 0.1
+  projection_dim: 192
+  hidden_dim: 256
+  lewm_hidden_dim: 2048
+  sigreg_weight: 0.09
+
+evaluation:
+  frequency: 5000
+  episodes: 10
+
+logging:
+  frequency: 1000
+
+wandb:
+  enable: true
+  project: stable-worldmodel-rl
+  group: taco-reacher-hard
+  tags: [reacher-hard, taco-settings]
+  run_id: null

@@ -18,6 +18,8 @@ def get_obs_shape(env):
 
 
 class DMControlWrapper(gym.Env):
+    metadata = {'render_modes': ['rgb_array'], 'render_fps': 25}
+
     def __init__(self, env, domain):
         self.env = env
         self.camera_id = 2 if domain == 'quadruped' else 0
