@@ -26,8 +26,9 @@ logger = logging.getLogger(__name__)
 
 
 def _pixels(env: gym.Env, size: int) -> np.ndarray:
+    render_env = env.unwrapped
     try:
-        frame = env.render(width=size, height=size)
+        frame = render_env.render(width=size, height=size)
     except TypeError:
         frame = env.render()
     if frame is None:
