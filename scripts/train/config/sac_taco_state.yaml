@@ -55,6 +55,7 @@ logging:
 
 wandb:
   enable: false
+  entity: marcopra
   project: stable-worldmodel-rl
   name: null
   group: null

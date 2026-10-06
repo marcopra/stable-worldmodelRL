@@ -109,11 +109,38 @@ extra representation-learning backward pass per update.
 
 ## Running the experiments
 
-The launcher starts exactly one detached tmux session per run, pins it to a
-physical GPU, maps that device to `cuda:0` inside the process, and writes a
-separate log and checkpoint directory. It checks that the selected GPU is
-visible first. Run one paired seed at a time across available GPUs to avoid
-oversubscribing the CPU physics simulator; use new session names for each run.
+The single-run launcher starts one detached tmux session per run. For seed
+queues, use `launch_sac_taco_state_queue_tmux.sh`: it starts one session per
+method/GPU and runs the listed seeds sequentially in that session. It pins the
+process to a physical GPU, maps that device to `cuda:0`, writes a separate log
+and checkpoint directory for each seed, and checks that the GPU is visible.
+Start at most two method queues per GPU.
+
+For a four-seed Reacher comparison, start these four queue sessions. Each
+method runs two seeds serially on each GPU; the W&B runs share one group and
+have distinct method/seed names.
+
+```bash
+export WANDB_BASE_URL=https://forge.coreweave.com/wandb
+conda activate swm-rl
+wandb login --host "$WANDB_BASE_URL"  # once, if this host is not authenticated
+
+group=reacher-hard-state-sac-taco-500k
+scripts/rl/launch_sac_taco_state_queue_tmux.sh rh-sac-g0 0 \
+  sac_taco_state_reacher_hard sac "$group" 0,1
+scripts/rl/launch_sac_taco_state_queue_tmux.sh rh-taco-g0 0 \
+  sac_taco_state_reacher_hard taco "$group" 0,1
+scripts/rl/launch_sac_taco_state_queue_tmux.sh rh-sac-g1 1 \
+  sac_taco_state_reacher_hard sac "$group" 2,3
+scripts/rl/launch_sac_taco_state_queue_tmux.sh rh-taco-g1 1 \
+  sac_taco_state_reacher_hard taco "$group" 2,3
+```
+
+This launches at most two jobs per GPU: one SAC queue and one TACO queue.
+Wait for all four queues to print `Queue complete` before starting another
+task. The launcher defaults `WANDB_BASE_URL` to the CoreWeave URL above and
+sets entity `marcopra`, project `stable-worldmodel-rl`, and the supplied group.
+Use `CONDA_ENV=swm-mw` for the Stick Pull config after installing MetaWorld.
 
 ```bash
 # Finger Turn Hard, seed 0: matched SAC and SAC+TACO on GPUs 0 and 1
@@ -160,6 +187,7 @@ Finger Turn Hard or Acrobot.
 - Reacher Hard state config: [`sac_taco_state_reacher_hard.yaml`](../scripts/train/config/sac_taco_state_reacher_hard.yaml)
 - Acrobot config: [`sac_taco_state_acrobot.yaml`](../scripts/train/config/sac_taco_state_acrobot.yaml)
 - tmux launcher: [`launch_sac_taco_state_tmux.sh`](../scripts/rl/launch_sac_taco_state_tmux.sh)
+- sequential seed queue: [`launch_sac_taco_state_queue_tmux.sh`](../scripts/rl/launch_sac_taco_state_queue_tmux.sh)
 
 The TACO loss, gradient ownership, plain SAC path, discounted reward target,
 CPU online smoke runs, checkpoint restore, and launcher syntax were validated.

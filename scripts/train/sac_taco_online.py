@@ -236,6 +236,7 @@ def run(cfg) -> None:
         import wandb
 
         wandb_run = wandb.init(
+            entity=cfg.wandb.entity,
             project=cfg.wandb.project,
             name=cfg.wandb.name,
             group=cfg.wandb.group,

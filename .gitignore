@@ -215,6 +215,8 @@ logs/
 !scripts/rl/local_*.sh
 !scripts/rl/prelim_reacher_hard.sh
 !scripts/rl/launch_sac_taco_state_tmux.sh
+!scripts/rl/launch_sac_taco_state_queue_tmux.sh
+!scripts/rl/run_sac_taco_state_seed_queue.sh
 
 outputs/
 multirun/
