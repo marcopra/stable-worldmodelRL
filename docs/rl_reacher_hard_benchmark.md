@@ -1,10 +1,10 @@
 # Reacher hard representation benchmark
 
-From the repository root, activate `swm-rl` and start all 15 runs with:
+From the repository root, activate `swm-rl` and start all 15 full-budget runs with:
 
 ```bash
 conda activate swm-rl
-scripts/rl/benchmark_reacher_hard.sh
+scripts/rl/benchmark_reach_hard.sh
 ```
 
 The launcher discovers the first two visible GPUs and runs the experiments in
@@ -52,3 +52,46 @@ All methods receive the same seeds, replay settings, batch size, optimizer
 schedule, action repeat, pixel observations, evaluation schedule, and training
 budget. See `scripts/train/config/drqv2_reacher_hard_taco.yaml` for the exact
 resolved values.
+
+## Reduced preliminary comparison
+
+Reacher Hard is the first task to screen because the TACO paper reports its
+largest difficult-task gain there: 51% over DrQ-v2 in its 1M-step comparison ([paper,
+Figure 3](https://proceedings.neurips.cc/paper_files/paper/2023/file/96d00450ed65531ffe2996daed487536-Paper-Conference.pdf)).
+Before running the full benchmark, launch the faster paired screen with:
+
+```bash
+scripts/rl/prelim_reacher_hard.sh
+```
+
+It starts two tmux sessions (`swm-rh-prelim-none` and
+`swm-rh-prelim-infonce`) with three matched seeds. Both use 20,000 agent steps,
+36px RGB frames, batch size 32, a 2,000-step random-action warmup, and evaluation
+every 5,000 steps. The sessions write per-seed logs under
+`logs/rl/prelim_reacher_hard_36px/` and checkpoints under
+`runs/prelim_reacher_hard_36px/`. This is a low-resolution integration and
+early-trend check; its returns are not comparable to the paper's full visual
+benchmark or sufficient to claim a performance improvement. The online trainer
+currently requires pixels, so this preliminary path does not provide a
+state-only run. By default the launcher uses physical GPUs 0 and 5, which passed
+EGL rendering preflight on this host; set `GPU_NONE` and `GPU_INFONCE` to choose
+different EGL-capable cards.
+
+### Pilot result (2026-10-06)
+
+The three-seed screen completed all six runs without runtime errors, CUDA
+out-of-memory errors, or non-finite InfoNCE metrics. Final evaluation returns
+at 20,000 steps (two episodes per evaluation) were:
+
+| Seed | Baseline | InfoNCE |
+|---:|---:|---:|
+| 0 | 0.0 | 0.0 |
+| 1 | 0.0 | 1.5 |
+| 2 | 38.5 | 36.5 |
+| Mean | 12.8 | 12.7 |
+
+The InfoNCE loss fell from about 3.5 after the first update to 0.29–0.68 at the
+end of the runs, with finite positive/negative similarity diagnostics. The
+similar final returns and large seed variation provide no evidence of a
+performance gap at this short, low-resolution budget. Use the full benchmark
+for a performance conclusion.

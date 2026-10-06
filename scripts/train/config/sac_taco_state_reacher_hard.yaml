@@ -1,0 +1,9 @@
+defaults:
+  - sac_taco_state
+  - _self_
+
+env: swm/ReacherDMControl-v0
+env_kwargs:
+  task: hard
+max_episode_steps: 500
+checkpoint_dir: ./runs/sac_taco_state/reacher_hard_state

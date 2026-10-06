@@ -1,0 +1,61 @@
+defaults:
+  - _self_
+
+hydra:
+  job:
+    chdir: false
+
+env: swm/FingerDMControl-v0
+env_kwargs:
+  task: turn_hard
+seed: 0
+device: cuda:0
+torch_threads: 1
+num_steps: 500000
+max_episode_steps: 500
+learning_starts: 5000
+batch_size: 1024
+update_frequency: 1
+updates_per_step: 1
+checkpoint_dir: ./runs/sac_taco_state/finger_turn_hard
+checkpoint_frequency: 50000
+resume: null
+evaluation_only: false
+
+agent:
+  hidden_dim: 256
+  feature_dim: 256
+  lr: 0.0003
+  alpha_lr: 0.0003
+  discount: 0.99
+  tau: 0.005
+  initial_alpha: 0.2
+  target_entropy: null
+
+taco:
+  enabled: true
+  lr: 0.0001
+  horizon: 3
+  feature_dim: 50
+  hidden_dim: 256
+  latent_action_dim: null
+  reward_prediction: true
+  reward_weight: 1.0
+
+replay:
+  capacity: 1000000
+  commit_interval: 1000
+
+evaluation:
+  frequency: 25000
+  episodes: 5
+
+logging:
+  frequency: 1000
+
+wandb:
+  enable: false
+  project: stable-worldmodel-rl
+  name: null
+  group: null
+  tags: []

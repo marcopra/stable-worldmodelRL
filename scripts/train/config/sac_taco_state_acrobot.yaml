@@ -1,0 +1,8 @@
+defaults:
+  - sac_taco_state
+  - _self_
+
+env: swm/AcrobotDMControl-v0
+env_kwargs: null
+max_episode_steps: 500
+checkpoint_dir: ./runs/sac_taco_state/acrobot_swingup

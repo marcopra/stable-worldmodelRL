@@ -213,6 +213,8 @@ logs/
 **/*.pyc
 !scripts/minerl.sh
 !scripts/rl/local_*.sh
+!scripts/rl/prelim_reacher_hard.sh
+!scripts/rl/launch_sac_taco_state_tmux.sh
 
 outputs/
 multirun/

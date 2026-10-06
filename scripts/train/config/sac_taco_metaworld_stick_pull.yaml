@@ -1,0 +1,10 @@
+defaults:
+  - sac_taco_state
+  - _self_
+
+env: Meta-World/MT1
+env_kwargs:
+  task: null
+  env_name: stick-pull-v3
+max_episode_steps: 150
+checkpoint_dir: ./runs/sac_taco_state/stick_pull_v3

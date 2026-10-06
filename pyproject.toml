@@ -64,6 +64,9 @@ env = [
     "ale-py",
 ]
 
+# Optional state-vector Meta-World tasks such as stick-pull-v3.
+metaworld = ["metaworld"]
+
 format = [
     "h5py",
     "hdf5plugin",
