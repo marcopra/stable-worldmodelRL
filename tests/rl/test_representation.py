@@ -3,6 +3,7 @@ import torch
 from stable_worldmodel.rl.representation import (
     InfoNCERepresentation,
     JEPATemporalRepresentation,
+    LeWMTemporalRepresentation,
     PLDMRepresentation,
     build_representation,
 )
@@ -79,3 +80,21 @@ def test_jepa_adapter_reuses_causal_predictor_and_stops_target_gradient():
     assert torch.isfinite(result['loss'])
     assert features.grad is not None
     assert target.grad is None
+
+
+def test_lewm_adapter_is_selectable_and_returns_scalar_loss():
+    objective = build_representation(
+        'lewm',
+        feature_dim=12,
+        action_dim=3,
+        horizon=1,
+        projection_dim=16,
+        lewm_hidden_dim=32,
+    )
+    assert isinstance(objective, LeWMTemporalRepresentation)
+    result = objective(
+        features=torch.randn(4, 2, 12),
+        actions=torch.randn(4, 1, 3),
+    )
+    assert result['loss'].ndim == 0
+    assert torch.isfinite(result['loss'])

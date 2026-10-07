@@ -1,0 +1,12 @@
+defaults:
+  - base
+  - _self_
+
+name: sac
+lr: 0.0003
+alpha_lr: 0.0003
+hidden_dim: 256
+feature_dim: 256
+tau: 0.005
+initial_alpha: 0.2
+target_entropy: null

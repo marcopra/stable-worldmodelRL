@@ -11,6 +11,21 @@ gpu_infonce="${GPU_INFONCE:-5}"
 worker() {
   local gpu="$1"
   local method="$2"
+  local loss_overrides=()
+  if [[ "${method}" == none ]]; then
+    loss_overrides=(
+      auxiliary.enabled=false wm=none
+      auxiliary.reward_prediction.enabled=false
+      auxiliary.curl.enabled=false
+    )
+  else
+    loss_overrides=(
+      auxiliary.enabled=true
+      wm=infonce
+      auxiliary.reward_prediction.enabled=false
+      auxiliary.curl.enabled=false
+    )
+  fi
   for seed in 0 1 2; do
     local run_name="reacher-hard-36px-${method}-seed-${seed}"
     local log_path="${log_root}/${run_name}.log"
@@ -24,7 +39,7 @@ worker() {
       "seed=${seed}" \
       "device=cuda:0" \
       "num_steps=20000" \
-      "image_size=36" \
+      "observation.image_size=36" \
       "batch_size=32" \
       "updates_per_step=1" \
       "agent.feature_dim=32" \
@@ -36,7 +51,7 @@ worker() {
       "evaluation.episodes=2" \
       "logging.frequency=1000" \
       "checkpoint_frequency=20000" \
-      "representation.loss=${method}" \
+      "${loss_overrides[@]}" \
       "wandb.enable=false" \
       "checkpoint_dir=${checkpoint_dir}" \
       2>&1 | tee "${log_path}"; then

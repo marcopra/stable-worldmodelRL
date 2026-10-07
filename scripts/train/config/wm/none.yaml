@@ -1,0 +1,7 @@
+# @package auxiliary.wm
+defaults:
+  - base
+  - _self_
+
+target: none
+enabled: false

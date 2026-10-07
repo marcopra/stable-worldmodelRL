@@ -1,0 +1,10 @@
+defaults:
+  - sac_state
+  - _self_
+
+observation:
+  mode: pixels
+  image_size: 84
+  frame_stack: 3
+
+checkpoint_dir: ./runs/sac_pixels

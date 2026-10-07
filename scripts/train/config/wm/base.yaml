@@ -1,0 +1,8 @@
+# @package auxiliary.wm
+# Common fields for the single selected primary world-model objective.
+target: none
+enabled: false
+weight: 1.0
+horizon: 1
+projection_dim: 128
+hidden_dim: 256

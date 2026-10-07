@@ -34,9 +34,9 @@ def test_agent_initializes_and_updates_on_cpu(representation):
     assert torch.isfinite(torch.tensor(metrics['critic/loss']))
     assert torch.isfinite(torch.tensor(metrics['actor/loss']))
     if representation == 'none':
-        assert not any(key.startswith('representation/') for key in metrics)
+        assert 'world_model/loss' not in metrics
     else:
-        assert torch.isfinite(torch.tensor(metrics['representation/loss']))
+        assert torch.isfinite(torch.tensor(metrics['world_model/loss']))
         assert any(
             parameter.grad is not None
             for parameter in agent.encoder.parameters()

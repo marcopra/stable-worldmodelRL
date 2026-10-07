@@ -1,195 +1,89 @@
-# State-vector SAC with TACO
+# State SAC with TACO objectives
 
-This adds a true SAC baseline and a state-vector SAC agent with the temporal
-TACO objective. It does not use pixels, image augmentations, or CURL. The
-implementation is independent of the cloned `TACO/` reference repository.
+State SAC and pixel DrQ-v2 now use the same online runner and auxiliary-loss
+configuration. `sac_state` is the state-vector SAC baseline; `sac_taco_state`
+preserves the existing Finger Turn Hard task preset with temporal InfoNCE
+selected and reward prediction enabled. CURL is disabled for this state task,
+but can be enabled for pixel observations. Both agents can also use rendered
+pixel inputs.
 
-## Relationship to TACO and DrQ-v2
+This is not an exact reproduction of the TACO paper's visual DrQ-v2 benchmark.
+It applies TACO-style representation learning to a SAC state encoder. The
+paper reports InfoNCE as the central temporal objective and CURL and reward
+prediction as additional terms. This implementation selects one primary
+world-model loss per experiment and allows reward prediction and CURL as
+separately configured add-ons. [TACO
+paper](https://papers.neurips.cc/paper_files/paper/2023/file/96d00450ed65531ffe2996daed487536-Paper-Conference.pdf)
 
-DrQ-v2 is not SAC: it uses a deterministic policy and scheduled exploration
-noise, while SAC uses a stochastic squashed-Gaussian policy and an entropy
-temperature. This implementation compares SAC against SAC plus TACO so the
-RL algorithm stays fixed within the experiment. It is not an exact reproduction
-of the paper's DrQ-v2 experiments.
+## Objective and gradient flow
 
-The TACO paper's image-based DMC table reports strong results on both Reacher
-Hard (`883 ± 63` for TACO vs `572 ± 51` for DrQ-v2 at 1M steps) and Finger
-Turn Hard (`632 ± 75` vs `220 ± 21`), averaged over six seeds. Reacher Hard is
-the best first screen because it is the task already in this repository's slow
-pixel benchmark, and this trainer can run its native low-dimensional state
-observations without rendering. Finger Turn Hard is a second in-repository
-check. These visual results motivate the task choices; they do not predict the
-result of state-based SAC. See the [TACO paper](https://proceedings.neurips.cc/paper_files/paper/2023/file/96d00450ed65531ffe2996daed487536-Paper-Conference.pdf).
+For a replay clip `(s_t, a_t, ..., a_{t+K-1}, s_{t+K})`, temporal InfoNCE
+encodes the start and future observations, represents each action, predicts
+the future feature, and classifies the matching batch entry against in-batch
+negatives. The action encoder is shared with the RL critic. The positive
+future feature is stop-gradient. Optional reward prediction regresses the
+discounted reward over its configured horizon. Pixel runs can also enable CURL
+to contrast independently augmented views.
 
-## Implementation and gradient flow
+The critic update trains the observation encoder, critic, and—when InfoNCE is
+enabled—the shared action encoder. The actor uses detached observation
+features; critic and action-encoder weights are frozen while gradients pass
+through the action value to the policy. The entropy objective updates SAC's
+temperature. The auxiliary update trains the shared encoder and every selected
+loss head. It does not use a separate EMA target encoder.
 
-For a replay clip `(s_t, a_t, ..., a_{t+K-1}, s_{t+K})`, the objective embeds
-each action, flattens and tokenizes the action sequence, predicts the projected
-future state, and applies bilinear in-batch cross entropy. Other batch entries
-are negatives. The default is `K=3`; the optional reward head predicts the
-discounted reward accumulated over those `K` transitions. The future-state
-projection uses the shared online encoder under `no_grad`, matching the
-reference's stop-gradient target path. There is no separate EMA encoder.
-The state encoder, policy, critics, and TACO predictor use compact MLPs; they
-do not copy the paper's image convolutional backbone and 1,024-unit heads.
+State observations do not support CURL. Enabling CURL in state mode fails
+during setup with a configuration error. The shared runner bootstraps across
+time-limit truncations and suppresses bootstrap only for true terminations.
 
-| Loss/update | Encoder | Policy | Q functions | Action tokenizer / TACO heads | Entropy temperature |
-|---|---|---|---|---|---|
-| SAC critic TD error | Updated | — | Updated | Tokenizer updated in TACO mode | — |
-| SAC actor objective | Detached features | Updated | Frozen weights; action gradient passes through Q | Frozen tokenizer weights; action gradient passes through tokenizer | — |
-| SAC entropy objective | — | Detached log probability | — | — | Updated |
-| TACO contrast/reward | Anchor path updated; future path detached | — | — | Updated | — |
-| Target critic calculation | No gradient | No gradient | Target critic is frozen | Target-action encoding has no gradient | Detached |
+## Running matched SAC baselines and TACO
 
-The reference also has overlapping Adam optimizers for the shared encoder and
-action tokenizer: the critic update and TACO update each use their own Adam
-state. This implementation preserves that reference behavior. The reference
-actor update computes unused gradients for Q and tokenizer weights; here those
-weights are frozen during the actor update while retaining the derivative from
-Q through the action to the policy. This avoids stale, unused gradients without
-changing the actor objective.
+From the repository root, run the baseline and TACO preset with the shared
+runner:
 
-With `taco.enabled=false`, the agent creates no auxiliary module, uses raw
-actions as critic inputs, and runs the same SAC update. This is the matched
-baseline for the experiments below. The TACO treatment learns a latent action
-representation for the critic and includes the TACO temporal objective. The
-reward head is enabled by default and CURL is absent.
+```bash
+PYTHONPATH="$PWD" conda run -n swm-rl python scripts/train/rl_online.py \
+  --config-name=sac_state auxiliary.enabled=false
 
-## Environments and experiment plan
+PYTHONPATH="$PWD" conda run -n swm-rl python scripts/train/rl_online.py \
+  --config-name=sac_taco_state
+```
 
-### Primary task: Reacher Hard with state observations
+To enable reward prediction alongside temporal InfoNCE:
 
-Use `swm/ReacherDMControl-v0` with `task=hard`. The Gymnasium wrapper exposes
-the task's low-dimensional state and does not render frames. Run a five-seed
-paired comparison at 500k environment steps. This preserves the physical task
-from the slow pixel benchmark while removing image encoding and rendering.
+```bash
+PYTHONPATH="$PWD" conda run -n swm-rl python scripts/train/rl_online.py \
+  --config-name=sac_taco_state \
+  auxiliary.reward_prediction.enabled=true
+```
 
-### Second task: Finger Turn Hard
+The Reacher Hard DrQ-v2 TACO preset selects InfoNCE and enables both reward
+prediction and CURL. Either add-on can be switched off independently. To
+enable only CURL on a pixel task:
 
-This is built into Stable World Model as `swm/FingerDMControl-v0`, has a
-low-dimensional observation and two continuous actions, and requires no image
-rendering. It is also a paper benchmark with a large TACO/DrQ-v2 difference.
-Run the same five-seed comparison at 500k steps:
+```bash
+PYTHONPATH="$PWD" conda run -n swm-rl python scripts/train/rl_online.py \
+  --config-name=drqv2 \
+  wm=infonce auxiliary.enabled=true \
+  auxiliary.wm.enabled=true \
+  auxiliary.curl.enabled=true
+```
 
-1. SAC (`taco.enabled=false`)
-2. SAC + TACO, reward prediction enabled (default)
-3. SAC + TACO, reward prediction disabled (`taco.reward_prediction=false`)
-
-The third arm separates the temporal contrastive contribution from the
-optional reward prediction loss. If resources are tight, run arms 1 and 2 for
-seeds 0–4 first, then run arm 3 for seeds 0–2 as an ablation. A 100k, three-seed
-pilot can catch integration or gross learning problems, but do not use it to
-decide that there is no performance gap: the paper comparison is at 1M steps.
-
-### Secondary task: Stick Pull
-
-`Meta-World/MT1` with `env_name=stick-pull-v3` is a useful contact-rich
-manipulation check with vector observations. Run the SAC and SAC+TACO arms for
-at least three matched seeds at 500k steps. MetaWorld is an optional dependency;
-use a compatible environment and set `CONDA_ENV` when launching. The trainer
-does not request a render mode.
-
-If MetaWorld setup is inconvenient, use the built-in
-`swm/AcrobotDMControl-v0` as another cheap vector-observation task. The TACO
-paper also reports better 1M-step visual performance than DrQ-v2 on Acrobot
-Swingup (`241 ± 21` vs `128 ± 8`), though again that result is not a state-SAC
-prediction.
+The older `sac_taco_online.py` command remains as a thin compatibility launcher.
+Task variants remain available as `sac_taco_state_reacher_hard`,
+`sac_taco_state_acrobot`, and `sac_taco_metaworld_stick_pull`. SAC and DrQ-v2
+also have pixel/state modality configs in `scripts/train/config/`.
 
 Keep seed, replay capacity, batch size, update-to-data ratio, evaluation
-schedule, and total steps identical across arms. The default batch size is
-1024, matching the large-batch setting selected in the TACO paper for stronger
-in-batch negatives; lower it only if necessary, and lower it for every arm.
-The config uses a 5k random-action warmup, one update per environment step,
-`K=3`, and five deterministic evaluation episodes every 25k steps. Compare
-paired per-seed final evaluation return, area under the evaluation-return
-curve, and success rate on Stick Pull. Report mean and standard deviation (or
-paired confidence intervals) across seeds; retain the per-seed curves because
-RL results can have broken seeds. Also log wall-clock time/FPS: TACO adds an
-extra representation-learning backward pass per update.
+schedule, and total steps matched across arms. The default SAC state TACO
+preset uses batch size 1024 and horizon 3. Use multiple seeds and report
+per-seed curves; short smoke-run scores are execution checks, not performance
+evidence.
 
-## Running the experiments
+## Implementation references
 
-The single-run launcher starts one detached tmux session per run. For seed
-queues, use `launch_sac_taco_state_queue_tmux.sh`: it starts one session per
-method/GPU and runs the listed seeds sequentially in that session. It pins the
-process to a physical GPU, maps that device to `cuda:0`, writes a separate log
-and checkpoint directory for each seed, and checks that the GPU is visible.
-Start at most two method queues per GPU.
-
-For a four-seed Reacher comparison, start these four queue sessions. Each
-method runs two seeds serially on each GPU; the W&B runs share one group and
-have distinct method/seed names.
-
-```bash
-export WANDB_BASE_URL=https://forge.coreweave.com/wandb
-conda activate swm-rl
-wandb login --host "$WANDB_BASE_URL"  # once, if this host is not authenticated
-
-group=reacher-hard-state-sac-taco-500k
-scripts/rl/launch_sac_taco_state_queue_tmux.sh rh-sac-g0 0 \
-  sac_taco_state_reacher_hard sac "$group" 0,1
-scripts/rl/launch_sac_taco_state_queue_tmux.sh rh-taco-g0 0 \
-  sac_taco_state_reacher_hard taco "$group" 0,1
-scripts/rl/launch_sac_taco_state_queue_tmux.sh rh-sac-g1 1 \
-  sac_taco_state_reacher_hard sac "$group" 2,3
-scripts/rl/launch_sac_taco_state_queue_tmux.sh rh-taco-g1 1 \
-  sac_taco_state_reacher_hard taco "$group" 2,3
-```
-
-This launches at most two jobs per GPU: one SAC queue and one TACO queue.
-Wait for all four queues to print `Queue complete` before starting another
-task. The launcher defaults `WANDB_BASE_URL` to the CoreWeave URL above and
-sets entity `marcopra`, project `stable-worldmodel-rl`, and the supplied group.
-Use `CONDA_ENV=swm-mw` for the Stick Pull config after installing MetaWorld.
-
-```bash
-# Finger Turn Hard, seed 0: matched SAC and SAC+TACO on GPUs 0 and 1
-scripts/rl/launch_sac_taco_state_tmux.sh finger-sac-s0 0 sac_taco_state sac 0
-scripts/rl/launch_sac_taco_state_tmux.sh finger-taco-s0 1 sac_taco_state taco 0
-
-# Reacher Hard state observations: same task as the slow pixel benchmark
-scripts/rl/launch_sac_taco_state_tmux.sh reacher-sac-s0 0 \
-  sac_taco_state_reacher_hard sac 0
-scripts/rl/launch_sac_taco_state_tmux.sh reacher-taco-s0 1 \
-  sac_taco_state_reacher_hard taco 0
-
-# Optional temporal-only ablation, same seed and budget
-scripts/rl/launch_sac_taco_state_tmux.sh finger-taco-no-reward-s0 1 \
-  sac_taco_state taco 0 taco.reward_prediction=false
-
-# Stick Pull, after installing MetaWorld in an environment named swm-mw
-CONDA_ENV=swm-mw scripts/rl/launch_sac_taco_state_tmux.sh stick-sac-s0 0 \
-  sac_taco_metaworld_stick_pull sac 0
-CONDA_ENV=swm-mw scripts/rl/launch_sac_taco_state_tmux.sh stick-taco-s0 1 \
-  sac_taco_metaworld_stick_pull taco 0
-
-# Built-in, cheap state-vector alternative to Stick Pull
-scripts/rl/launch_sac_taco_state_tmux.sh acrobot-taco-s0 0 \
-  sac_taco_state_acrobot taco 0
-
-# Attach to a run and follow its output
-tmux attach -t finger-taco-s0
-```
-
-Repeat with seed values 1 through 4 and unique tmux names. To run a short
-integration pilot, pass Hydra overrides such as `num_steps=100000`,
-`evaluation.frequency=10000`, and `evaluation.episodes=3`. Install the
-MetaWorld extra in the selected compatible environment with
-`pip install -e ".[env,metaworld]"`; the optional dependency is not needed for
-Finger Turn Hard or Acrobot.
-
-## Files and validation
-
-- Agent and objective: [`sac_taco.py`](../stable_worldmodel/rl/sac_taco.py)
-- Online trainer: [`sac_taco_online.py`](../scripts/train/sac_taco_online.py)
-- Finger config: [`sac_taco_state.yaml`](../scripts/train/config/sac_taco_state.yaml)
-- Stick Pull config: [`sac_taco_metaworld_stick_pull.yaml`](../scripts/train/config/sac_taco_metaworld_stick_pull.yaml)
-- Reacher Hard state config: [`sac_taco_state_reacher_hard.yaml`](../scripts/train/config/sac_taco_state_reacher_hard.yaml)
-- Acrobot config: [`sac_taco_state_acrobot.yaml`](../scripts/train/config/sac_taco_state_acrobot.yaml)
-- tmux launcher: [`launch_sac_taco_state_tmux.sh`](../scripts/rl/launch_sac_taco_state_tmux.sh)
-- sequential seed queue: [`launch_sac_taco_state_queue_tmux.sh`](../scripts/rl/launch_sac_taco_state_queue_tmux.sh)
-
-The TACO loss, gradient ownership, plain SAC path, discounted reward target,
-CPU online smoke runs, checkpoint restore, and launcher syntax were validated.
-The full 500k runs have not been started. Stick Pull runtime validation also
-requires installing MetaWorld in a compatible environment.
+- Canonical SAC agent: `stable_worldmodel/rl/algorithms/sac.py`
+- Shared online runner: `scripts/train/rl_online.py`
+- State SAC baseline: `scripts/train/config/sac_state.yaml`
+- State SAC TACO preset: `scripts/train/config/sac_taco_state.yaml`
+- Pixel DrQ-v2 TACO preset: `scripts/train/config/drqv2_reacher_hard_taco.yaml`

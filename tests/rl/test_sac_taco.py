@@ -13,15 +13,9 @@ def test_taco_state_objective_stops_positive_target_gradient():
         feature_dim=8,
         hidden_dim=16,
     )
-    features = torch.randn(
-        batch, horizon + 1, state_dim, requires_grad=True
-    )
-    targets = torch.randn(
-        batch, horizon + 1, state_dim, requires_grad=True
-    )
-    actions = torch.randn(
-        batch, horizon, action_dim, requires_grad=True
-    )
+    features = torch.randn(batch, horizon + 1, state_dim, requires_grad=True)
+    targets = torch.randn(batch, horizon + 1, state_dim, requires_grad=True)
+    actions = torch.randn(batch, horizon, action_dim, requires_grad=True)
     horizon_reward = torch.randn(batch, 1)
 
     metrics = objective(features, actions, targets, horizon_reward)
@@ -59,16 +53,20 @@ def test_sac_taco_update_has_explicit_gradient_ownership():
 
     metrics = agent.update(batch)
 
-    assert all(torch.isfinite(torch.tensor(value)) for value in metrics.values())
+    assert all(
+        torch.isfinite(torch.tensor(value)) for value in metrics.values()
+    )
     assert agent.encoder.net[0].weight.grad is not None
     assert agent.actor.mean.weight.grad is not None
     assert agent.log_alpha.grad is not None
     assert agent.taco is not None
-    assert agent.taco.state_action_predictor[0].weight.grad is not None
-    assert agent.taco.action_tokenizer[0].weight.grad is not None
+    assert agent.taco.predictor[0].weight.grad is not None
+    assert agent.taco.action_encoder[0].weight.grad is not None
     # The actor step freezes both Q and action-encoder weights; the TACO loss
     # does not include Q or policy parameters. The target Q remains detached.
-    assert all(parameter.grad is None for parameter in agent.critic.parameters())
+    assert all(
+        parameter.grad is None for parameter in agent.critic.parameters()
+    )
     assert all(
         parameter.grad is None
         for parameter in agent.critic_target.parameters()
@@ -92,7 +90,7 @@ def test_state_sac_baseline_uses_raw_actions_and_no_taco_module():
         'discount': torch.ones(4, 2),
     }
     metrics = agent.update(batch)
-    assert 'taco/loss' not in metrics
+    assert 'world_model/loss' not in metrics
     assert torch.isfinite(torch.tensor(metrics['critic/loss']))
     assert torch.isfinite(torch.tensor(metrics['actor/loss']))
 

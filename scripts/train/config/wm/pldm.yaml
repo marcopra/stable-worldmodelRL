@@ -1,0 +1,9 @@
+# @package auxiliary.wm
+defaults:
+  - base
+  - _self_
+
+target: pldm
+enabled: true
+weight: 1.0
+projection_dim: 128

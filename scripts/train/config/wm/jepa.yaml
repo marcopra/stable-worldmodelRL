@@ -1,0 +1,10 @@
+# @package auxiliary.wm
+defaults:
+  - base
+  - _self_
+
+target: jepa
+enabled: true
+weight: 1.0
+horizon: 1
+projection_dim: 128

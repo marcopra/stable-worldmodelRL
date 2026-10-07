@@ -34,9 +34,10 @@ and the trainer caps episodes at 500 agent steps (the 20-second task limit).
 The local replay buffer stores full three-frame image stacks in RAM. A 1M
 transition capacity would exceed this machine's available memory with two
 concurrent jobs, so the config uses 100k entries. All other shared training
-settings above are retained. TACO's `curl=true` and `reward=true` auxiliary
-heads are objective-specific and are not included in the pure InfoNCE, LeWM,
-and baseline comparison.
+settings above are retained. The task preset selects InfoNCE and enables its
+reward-prediction and CURL add-ons. The benchmark launcher disables both
+add-ons and selects exactly one of baseline (`wm=none`), InfoNCE, or LeWM per
+run, keeping the primary-loss comparison isolated.
 
 The default batch size is 512 because a local InfoNCE run at 1,024 exhausted a
 1080 Ti's 11 GiB VRAM. The launcher accepts `BATCH_SIZE=...` to override this
@@ -45,8 +46,7 @@ on a larger GPU; the chosen batch is shared across all methods.
 `lewm` selects a LeWM objective adapter over the shared DrQ pixel encoder: it
 uses this repository's LeWM action embedder/predictor and SIGReg with the
 LeWM default weight. It is not the standalone LeWM ViT encoder/model. The
-InfoNCE variant uses the temporal action-conditioned objective already in
-the DrQ agent. The `none` run disables the auxiliary representation loss.
+`none` run selects `wm=none` and disables auxiliary learning.
 
 All methods receive the same seeds, replay settings, batch size, optimizer
 schedule, action repeat, pixel observations, evaluation schedule, and training
@@ -71,9 +71,9 @@ every 5,000 steps. The sessions write per-seed logs under
 `logs/rl/prelim_reacher_hard_36px/` and checkpoints under
 `runs/prelim_reacher_hard_36px/`. This is a low-resolution integration and
 early-trend check; its returns are not comparable to the paper's full visual
-benchmark or sufficient to claim a performance improvement. The online trainer
-currently requires pixels, so this preliminary path does not provide a
-state-only run. By default the launcher uses physical GPUs 0 and 5, which passed
+benchmark or sufficient to claim a performance improvement. This preliminary
+path uses rendered pixels, though the shared trainer also supports state
+observations. By default the launcher uses physical GPUs 0 and 5, which passed
 EGL rendering preflight on this host; set `GPU_NONE` and `GPU_INFONCE` to choose
 different EGL-capable cards.
 

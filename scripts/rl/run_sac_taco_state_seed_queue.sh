@@ -20,8 +20,8 @@ log_root="${repo_root}/logs/rl/sac_taco_state"
 run_root="${repo_root}/runs/sac_taco_state/${config}/${method}"
 
 case "${method}" in
-  sac) taco_enabled=false ;;
-  taco) taco_enabled=true ;;
+  sac) auxiliary_enabled=false; wm_config=none ;;
+  taco) auxiliary_enabled=true; wm_config=infonce ;;
   *) echo "method must be 'sac' or 'taco', got '${method}'." >&2; exit 2 ;;
 esac
 
@@ -49,7 +49,8 @@ for seed in "${seeds[@]}"; do
     --config-name "${config}"
     "seed=${seed}"
     device=cuda:0
-    "taco.enabled=${taco_enabled}"
+    "auxiliary.enabled=${auxiliary_enabled}"
+    "wm=${wm_config}"
     "checkpoint_dir=${run_dir}"
     "wandb.enable=true"
     "wandb.entity=${entity}"

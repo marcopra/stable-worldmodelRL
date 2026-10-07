@@ -1,0 +1,67 @@
+defaults:
+  - agent: sac
+  - wm: none
+  - _self_
+
+hydra:
+  job:
+    chdir: false
+
+algorithm:
+  name: ${agent.name}
+
+observation:
+  mode: state
+  state_key: null
+  image_size: 84
+  frame_stack: 1
+
+env: MountainCarContinuous-v0
+env_kwargs: {}
+seed: 1
+device: cuda:0
+torch_threads: 1
+max_episode_steps: 0
+num_steps: 100000
+learning_starts: 1000
+batch_size: 256
+updates_per_step: 1
+update_frequency: 1
+checkpoint_dir: ./runs/rl_online
+checkpoint_frequency: 10000
+resume: null
+evaluation_only: false
+
+auxiliary:
+  enabled: false
+  wm: {}
+  reward_prediction:
+    enabled: false
+    weight: 1.0
+    horizon: 1
+    hidden_dim: 256
+    discount: null
+  curl:
+    enabled: false
+    weight: 1.0
+    projection_dim: 128
+
+replay:
+  capacity: 50000
+  commit_interval: 1000
+
+evaluation:
+  frequency: 10000
+  episodes: 5
+
+logging:
+  frequency: 1000
+
+wandb:
+  enable: false
+  entity: null
+  project: stable-worldmodel-rl
+  name: null
+  group: null
+  tags: []
+  run_id: null

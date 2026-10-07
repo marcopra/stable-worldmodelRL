@@ -1,0 +1,3 @@
+# Shared settings for online model-free agents.
+discount: 0.99
+augmentation_pad: 4

@@ -1,121 +1,189 @@
-# Stable World Model RL repository audit
+# Online RL architecture audit
 
-Audit date: 2026-09-30. This describes the checked-out implementation, not an
-assumption based on module names.
+Audit date: 2026-10-07. This describes the current online RL implementation
+and the intended extension path for algorithms and world-model losses.
 
 ## Repository map
 
-| Path | Purpose and important interfaces | Relationship |
+| Area | Location | Responsibility |
 |---|---|---|
-| `stable_worldmodel/data/` | `Dataset` and `ReplayBuffer`; episode aware storage, sampling, format adapters, transforms and normalization. | Offline model training and online TD-MPC2 replay can share these data types. |
-| `stable_worldmodel/world/` | `World` rollout/evaluation and vectorized `EnvPool`. | Drives `Policy` implementations through Gymnasium envs. |
-| `stable_worldmodel/wrapper/` | `MegaWrapper` preprocessing; pixels and state are standardized into `info`. | Used by `World` and dataset-compatible interaction. |
-| `stable_worldmodel/wm/` | World model architectures/objectives: GCRL, PreJEPA, LeWM, PLDM, TD-MPC2; `loss.py` has VCReg, PLDM, and temporal straightening utilities. | Models expose encoders/predictors and inference rollouts; train scripts wire their own losses. |
-| `stable_worldmodel/planning/` | Objectives, shooting evaluator, and CEM/MPPI/gradient solvers. | Model-based planning over model rollouts; not a model-free actor/critic. |
-| `stable_worldmodel/policy.py` | Policy interfaces/adapters for actions, world models, and planners. | Plugs learned components into `World`. |
-| `scripts/train/` | Hydra + StablePretraining training for offline models and policies, including PLDM, PreJEPA, LeWM, TD-MPC2, IQL/BC variants. | Existing configuration, optimizer, checkpoint and W&B conventions. |
-| `scripts/expert/` | SB3 SAC expert collection and online TD-MPC2 training. | The SAC script uses SB3 and is an expert-policy utility, not a custom visual DrQ-v2 implementation. The TD-MPC2 script is the nearest online-RL loop to extend conceptually. |
-| `scripts/data/`, `scripts/visualization/` | Data collection/conversion and visualization tools. | Support dataset and experiment workflows. |
-| `tests/` | Unit/integration tests for data, envs, planning, world models, wrappers, and CLI. | No RL agent tests currently exist. |
-| `TACO/` | Local reference clone with paper PDF and original DrQ-v2/TACO agents. | Temporary study material only; no runtime imports or dependency should be added. |
+| Algorithm agents | `stable_worldmodel/rl/algorithms/` | SAC and DrQ-v2 update logic, optimizer ownership, action selection, and agent checkpoints. Both satisfy the `OnlineAgent` protocol. |
+| Observation encoders | `stable_worldmodel/rl/encoders.py` | Shared numeric-state MLP and rendered-pixel convolutional encoders. |
+| Objective adapters | `stable_worldmodel/rl/representation.py` | Registry and implementations for one selected primary world-model objective plus optional add-ons. |
+| Pixel augmentation | `stable_worldmodel/rl/augmentation.py` | Random-shift augmentation for DrQ-v2 and CURL views. |
+| Online experiment runner | `scripts/train/rl_online.py` | Collection, replay, evaluation, logging, checkpointing, and algorithm dispatch. |
+| Hydra base config | `scripts/train/config/rl_online.yaml` | Shared online-run infrastructure and defaults. |
+| Agent config group | `scripts/train/config/agent/` | Common agent defaults plus algorithm-specific settings. |
+| World-model config group | `scripts/train/config/wm/` | A base config and one config per selected objective, including `none`. |
+| Task configs | `scripts/train/config/*.yaml` | Select agent and objective groups, then override environment and task-specific values. |
+| Compatibility launchers/imports | `scripts/train/{drqv2_online,sac_taco_online}.py`, `stable_worldmodel/rl/{drqv2,sac_taco}.py` | Preserve established command and import paths while delegating to the shared implementation. |
+| Replay | `stable_worldmodel/data/buffer.py` | Episode-aware sampling of aligned temporal `observation`, `action`, `reward`, and `discount` sequences. |
 
-## Existing functionality
+Each algorithm agent owns its gradient flow and optimizer steps. The runner
+depends only on the common `act`, `update`, `state_dict`, and `load_state_dict`
+interface and the shared replay batch, so new algorithms do not need a second
+collection loop.
 
-| Capability | Status | Evidence and reuse |
-|---|---|---|
-| Image encoders | Already implemented | PreJEPA/PLDM/LeWM accept pretrained vision encoders and projectors; TD-MPC2 has a compact pixel CNN. `RandomShiftsAug` exists in the TACO reference only. |
-| Latent dynamics and action conditioning | Already implemented | TD-MPC2 uses one-step `(z, action)` dynamics; PLDM and LeWM use action encoders and temporal predictors; PreJEPA supports temporal prediction and action-conditioned variants. |
-| Temporal prediction | Already implemented | PreJEPA, LeWM, PLDM, TD-MPC2 and planning rollouts. |
-| JEPA-style learning | Already implemented | PreJEPA model/training entry point. The training code handles frozen pretrained backbones and predicted/target representations. |
-| Contrastive learning | Partially implemented | GCRL includes contrastive goal/reward-conditioned learning machinery; no batch InfoNCE temporal dynamics objective for online model-free RL was found. |
-| Target encoders / EMA | Partially implemented | Some objectives detach target encodings or use model-specific target behavior; there is no shared online target-encoder API suitable for a DrQ agent. |
-| Augmentations | Partially implemented | Dataset transforms and model-specific image transforms exist. DrQ-v2 random-shift augmentation is absent from Stable World Model. |
-| Replay / trajectory sampling | Already implemented | `ReplayBuffer` stores whole episodes and samples episode-safe clips. The online TD-MPC2 loop uses it; temporal clip length can supply multi-step actions/observations. |
-| Action conditioning | Already implemented | Temporal models accept encoded action streams; replay episodes retain actions. |
-| Logging | Already implemented | Hydra training scripts use optional Lightning W&B logging; online TD-MPC2 supports optional W&B. |
-| Training scripts | Already implemented | Offline models and online TD-MPC2 have entry points; no DrQ-v2 trainer. |
-| Evaluation | Partially implemented | `World.evaluate` runs attached policies, while TD-MPC2 online has task evaluation. No DrQ-specific online evaluation loop exists. |
-| Checkpointing | Already implemented | Offline model `save_pretrained` and online TD-MPC2 checkpoint functions. Agent optimizer/replay resume semantics need an RL-specific checkpoint. |
-| Configuration/dependencies | Already implemented | Hydra configs; `pyproject.toml` has Torch, Gymnasium, and optional `env`, `train`, and W&B extras. |
-| Multi-GPU launch | Partially implemented | Hydra submitit launcher exists for training; local two-GPU commands can use separate processes and `CUDA_VISIBLE_DEVICES`. No RL launcher exists. |
+## Current RL status
 
-## Gaps for model-free RL evaluation
+The repository now has a shared online runner and two custom continuous
+control agents: SAC and DrQ-v2. Both accept state or rendered pixel inputs,
+use the same episode-aware replay schema, and keep their algorithm-specific
+gradient and optimizer logic in the agent. Baseline training does not allocate
+auxiliary modules. An enabled auxiliary path selects at most one primary
+world-model loss, with reward prediction and CURL available as independent
+add-ons.
 
-- **Missing:** a native DrQ-v2 agent, actor/twin critics/target critics, online RL replay interaction, and an RL-specific trainer/config.
-- **Missing:** a DrQ random-shift augmentation and temporal InfoNCE dynamics objective in the Stable World Model package.
-- **Partially implemented:** episode-aware replay, environment wrappers/collections, online evaluation, logging, and checkpoint patterns exist, but their APIs need adapting for a continuous-control DrQ loop and exact time-limit handling.
-- **Could be reused:** `ReplayBuffer`, Gymnasium environment registration/wrappers, TD-MPC2's online environment setup/evaluation/logging/checkpoint structure, Hydra configuration, and `World`/policy conventions where their abstractions fit.
-- **Needs modification or an adapter:** sampling consecutive `(obs_t, action_t...action_{t+k-1}, obs_{t+k})` clips from replay, feeding temporal batches to objectives, and sharing an encoder without changing baseline DrQ gradient flow.
-- **Existing representation losses are not interchangeable callables:** PLDM and VCReg in `wm/loss.py` are losses, but PreJEPA and LeWM are complete training models with distinct predictors/targets, input schemas and optimizers. They cannot safely be selected by a string and called against DrQ without adapters. This is a design boundary to document and test rather than silently pretending every existing model is plug-compatible.
-- **W&B is optional:** `wandb` is included in the `train` extra and existing scripts guard logger creation with config flags.
+The previous audit's findings that no native DrQ-v2 trainer, DrQ augmentation,
+or temporal InfoNCE adapter existed are stale. LeWM is now available through a
+feature-level adapter as well; its earlier “not compatible” status applied to
+using the standalone LeWM training model directly. Existing offline world-model
+training scripts remain separate from these online RL adapters.
 
-## TACO technical note
+## Supported modality and loss matrix
 
-The NeurIPS 2023 TACO paper describes a temporal action-driven contrastive
-objective that learns state and action representations by maximizing the
-mutual information between a current state paired with a sequence of actions
-and the matching future state. It presents the objective as an auxiliary
-module for visual RL, with an InfoNCE classification over batch negatives.
-The [paper](https://proceedings.neurips.cc/paper_files/paper/2023/hash/96d00450ed65531ffe2996daed487536-Abstract-Conference.html)
-states that this learns control-relevant state and action representations.
+| Capability | Numeric state | Rendered pixels |
+|---|---:|---:|
+| SAC baseline | Yes | Yes |
+| DrQ-v2 baseline | Yes | Yes |
+| Temporal InfoNCE (TACO) | Yes | Yes |
+| LeWM adapter | Yes | Yes |
+| JEPA adapter | Yes | Yes |
+| PLDM adapter | Yes | Yes |
+| Reward prediction add-on | Yes | Yes; independently selectable |
+| CURL add-on | Rejected during setup | Yes; independently selectable |
 
-The local reference implementation uses a DrQ-style four-layer convolutional
-encoder and random-shift augmentation. It embeds actions (including action
-sequences) through a learned action tokenizer, predicts a future projection
-from the current state and encoded action sequence, forms a batch-by-batch
-similarity matrix with a learned bilinear matrix, and uses diagonal labels for
-cross entropy. Future/positive encoding is under `no_grad`; it is a detached
-view of the shared encoder, not a separately updated EMA target encoder. Its
-replay sampler emits temporal action sequences. The code also has optional
-reward prediction and CURL-style same-state contrastive losses. The paper and
-implementation are conceptually consistent on action-conditioned temporal
-contrast, while details such as the exact predictor and action tokenization
-are implementation choices.
+Each run selects at most one primary loss from InfoNCE, LeWM, JEPA, or PLDM.
+Reward prediction and CURL are explicit optional add-ons; either or both may be
+enabled with the selected primary loss. CURL requires pixels.
 
-Generic concepts to retain: temporal positive alignment, in-batch negatives,
-action conditioning over the interval, explicit stop-gradient target, and
-joint training with RL. Do not copy the reference's agent class layout,
-encoder ownership, unused/optional helper modules, or hardwired batch/update
-flow. Stable World Model already has model-agnostic replay episodes, temporal
-predictors, vision encoders and Hydra training conventions. Reimplement the
-objective as a small package module with an explicit input contract and let a
-DrQ agent own the shared encoder and optimizer decisions.
+State mode accepts a numeric Box observation, or a numeric Box field selected
+with `observation.state_key` from a Dict observation. Pixel mode renders RGB
+frames, resizes them, and optionally stacks them. The action space must be a
+continuous Box normalized to `[-1, 1]`.
 
-This contribution is useful because Stable World Model has strong temporal
-world-model losses and a replay abstraction but lacks the model-free DrQ
-evaluation path and a batch InfoNCE dynamics objective. The novel engineering
-value is the clean, measurable bridge between those representation choices
-and online actor/critic learning, not a new claim about TACO itself.
+LeWM, JEPA, and PLDM are feature-level adapters over the selected RL encoder.
+They reuse compatible predictors or losses from this library; they are not
+the standalone LeWM, PreJEPA/JEPA, or PLDM training stacks. SPR, ATC, and DRIML
+do not yet have online RL adapters.
 
-## Phase 1–4 architecture and implementation plan
+## Configuration model
 
-The initial implementation will add a separate `stable_worldmodel.rl` package
-for a compact DrQ-v2 agent and online trainer. It will reuse `ReplayBuffer`
-for completed episodes, the existing Gymnasium envs and configs, and existing
-W&B conventions. Baseline DrQ will retain the usual DrQ-v2 path: critic loss
-updates the shared encoder; actor updates use detached encoded observations;
-target critics are updated by Polyak averaging. In the auxiliary run, a
-configurable objective gets temporally sampled replay clips and contributes
-`representation.weight * loss` to encoder/dynamics optimization. The target
-representation is detached; the first implementation will not add EMA unless
-the objective needs it. Random shifts will be applied to both endpoints
-independently.
+The top-level `rl_online.yaml` composes an agent and a world-model config. The
+Hydra group stays in `config/wm/`, while its package directive places the
+selected config at `auxiliary.wm` in the resolved run config:
 
-The first compatible objective is action-conditioned temporal InfoNCE: encode
-`o_t`, predict a projected `o_{t+k}` from `z_t` and the intervening actions,
-compare against detached target encodings in the same batch, use the diagonal
-as positives, and all other rows as negatives. Use normalized embeddings,
-logits divided by configurable temperature, and cross entropy with labels
-`arange(batch)`. The objective should expose loss and inexpensive similarity
-diagnostics. For `representation.loss=none`, the baseline gets no auxiliary
-modules or extra updates. The existing PLDM temporal-alignment/VCReg loss is
-compatible after a small projection adapter. A JEPA-style adapter can reuse
-Stable World Model's `CausalPredictor` with the DrQ latent sequence and a
-detached future target; it is explicitly not the full pretrained/frozen
-backbone PreJEPA training pipeline. LeWM remains incompatible until an adapter
-can preserve its predictor/target and optimizer contracts.
+```yaml
+defaults:
+  - agent: sac
+  - wm: none
+  - _self_
+```
 
-We will implement in increments: objective plus its requested unit tests,
-DrQ agent, replay/training integration, optional W&B/checkpointing, local
-smoke configs/commands, then final summary and SWE handoff. Initial validation
-will distinguish unit and smoke checks from benchmark evaluation.
+`auxiliary.enabled` is the global on/off switch and defaults to false. A run
+selects at most one primary `wm` config. For example, `wm=infonce` selects
+temporal InfoNCE, while `wm=lewm` selects LeWM. That config is packaged under
+`auxiliary.wm`, where `target` names the objective and `enabled`, its
+parameters, and scalar weight control it. Override those settings using paths
+such as `auxiliary.wm.horizon=3`. `auxiliary.reward_prediction` and
+`auxiliary.curl` are the two explicit add-on switches, with their own
+parameters and weights. Do not configure multiple primary world-model losses
+or add a generic keyed objective collection. Compare primary losses in
+separate experiments; toggle either or both supported add-ons per experiment.
+
+Task configs inherit `rl_online`, choose an `agent` and `wm`, then override
+task-specific settings. For example:
+
+```yaml
+defaults:
+  - rl_online
+  - override /agent: sac
+  - override /wm: infonce
+  - _self_
+
+auxiliary:
+  enabled: true
+  wm:
+    target: infonce
+    enabled: true
+    horizon: 3
+  reward_prediction:
+    enabled: true
+  curl:
+    enabled: true
+```
+
+The resolved `algorithm.name` comes from `agent.name` and appears in structured
+logs, W&B config, and checkpoints. Selected objectives are constructed only
+when `auxiliary.enabled=true`; disabled runs do not allocate or update
+auxiliary modules. CURL is valid only with pixel observations and fails clearly
+at setup for state runs, even if the global auxiliary switch is off. Replay
+history covers the maximum selected primary/reward-prediction horizon and the
+DrQ-v2 n-step target. True terminations disable bootstrap; time-limit
+truncations retain it.
+
+## Adding an algorithm
+
+1. Add `stable_worldmodel/rl/algorithms/<name>.py`. Implement `OnlineAgent`
+   methods: `act(observation, step, eval_mode)`, `update(batch, step)`,
+   `state_dict()`, and `load_state_dict(state)`.
+2. Keep the algorithm's critic/actor updates, target networks, gradient
+   ownership, and optimizers inside its agent. Use `make_observation_encoder`
+   for the shared state/pixel encoders where appropriate.
+3. Add `scripts/train/config/agent/<name>.yaml` with `name` and that
+   algorithm's settings. Add task configs that inherit `rl_online`, select the
+   agent group, and override environment-specific values.
+4. Add dispatch and replay-history requirements to `rl_online.py` only where
+   algorithm semantics require them. Keep collection, evaluation, logging, and
+   checkpoint logic shared.
+5. Validate state and pixel baselines, enabled and disabled auxiliary paths,
+   replay requirements, truncation bootstrapping, and checkpoint restore.
+
+## Adding a world-model objective
+
+1. Implement an `nn.Module` adapter in `stable_worldmodel/rl/representation.py`
+   that accepts the shared keyword inputs (`features`, `actions`, optional
+   target features, rewards, discounts, and pixel views) and returns a scalar
+   differentiable `loss` plus scalar diagnostics.
+2. Register primary world-model losses in `build_world_model`. Reward
+   prediction and CURL remain the only explicit add-ons. Validate modality and
+   horizon requirements so invalid configs fail before training.
+3. Add `scripts/train/config/wm/<name>.yaml`, inheriting `wm/base.yaml`, with
+   that objective's own parameters and default weight.
+4. Add tests for the objective, target-gradient behavior, weighting,
+   checkpoint restore, and rejected modality combinations. Do not add generic
+   composition of primary losses; a run selects at most one `wm` config.
+5. Update the capability matrix and document how an adapter differs from its
+   standalone model implementation.
+
+## Validation guide
+
+The online RL checks should cover:
+
+- CPU agent updates for SAC and DrQ-v2 in state and pixel modes, with the
+  auxiliary switch off, one primary loss on, and representative add-ons on.
+- Box and selected Dict state extraction; rendered frame resizing and stacking;
+  and replay clips that remain inside their episode.
+- True termination versus time-limit truncation bootstrap values.
+- Loss weight application, objective/module checkpoint restore, algorithm name
+  in logs/checkpoints, and a clear state-plus-CURL setup error.
+- Hydra composition for every task config and short collection/update smokes for
+  all four algorithm/modality pairs.
+
+These checks validate execution and interfaces; they do not establish relative
+algorithm performance.
+
+Validation run on 2026-10-07 after optional add-ons were integrated: all 36
+tests in `tests/rl` passed; Hydra composition succeeded for every SAC and
+DrQ-v2 task config, with each selected objective resolving under
+`auxiliary.wm.target`. Six CPU collection/update smokes covered all four
+algorithm/modality pairs, state SAC with InfoNCE plus reward prediction, and
+pixel DrQ-v2 with InfoNCE, reward prediction, and CURL. After moving the
+configuration under `auxiliary.wm`, two more short CPU smokes exercised the
+nested overrides for state SAC with InfoNCE/reward prediction and pixel
+DrQ-v2 with InfoNCE/reward prediction/CURL. The unit suite also covers Box and
+selected Dict state inputs, pixel resize/stack behavior, episode-bounded
+temporal replay, truncation bootstrap, objective weighting and restore,
+algorithm-name checkpoint metadata, and state-plus-CURL rejection. Changed RL
+files passed Ruff, `git diff --check` passed, and shell scripts passed
+`bash -n`.

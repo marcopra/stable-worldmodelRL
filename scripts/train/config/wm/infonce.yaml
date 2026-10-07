@@ -1,0 +1,12 @@
+# @package auxiliary.wm
+defaults:
+  - base
+  - _self_
+
+target: infonce
+enabled: true
+weight: 1.0
+horizon: 1
+projection_dim: 128
+hidden_dim: 256
+temperature: 0.1

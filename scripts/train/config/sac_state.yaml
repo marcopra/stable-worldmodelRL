@@ -1,0 +1,31 @@
+defaults:
+  - rl_online
+  - override /agent: sac
+  - override /wm: none
+  - _self_
+
+observation:
+  mode: state
+
+env: swm/FingerDMControl-v0
+env_kwargs:
+  task: turn_hard
+device: cuda:0
+torch_threads: 1
+num_steps: 500000
+max_episode_steps: 500
+learning_starts: 5000
+batch_size: 1024
+checkpoint_dir: ./runs/sac_state/finger_turn_hard
+checkpoint_frequency: 50000
+
+replay:
+  capacity: 1000000
+  commit_interval: 1000
+
+evaluation:
+  frequency: 25000
+  episodes: 5
+
+wandb:
+  entity: marcopra

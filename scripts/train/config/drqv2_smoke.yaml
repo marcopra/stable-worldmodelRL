@@ -3,7 +3,6 @@ defaults:
   - _self_
 
 num_steps: 120
-image_size: 36
 batch_size: 2
 updates_per_step: 1
 checkpoint_dir: ./runs/drqv2_smoke
@@ -12,6 +11,8 @@ agent:
   feature_dim: 16
   hidden_dim: 32
   num_expl_steps: 32
+observation:
+  image_size: 36
 replay:
   capacity: 2000
   commit_interval: 64

@@ -1,0 +1,12 @@
+# @package auxiliary.wm
+defaults:
+  - base
+  - _self_
+
+target: lewm
+enabled: true
+weight: 1.0
+horizon: 1
+projection_dim: 192
+lewm_hidden_dim: 2048
+sigreg_weight: 0.09

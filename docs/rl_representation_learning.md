@@ -1,173 +1,119 @@
-# DrQ-v2 with Stable World Model representation objectives
+# Online SAC and DrQ-v2 with representation objectives
 
-## What was present and what was missing
+The online RL package lets SAC and DrQ-v2 run with state or rendered pixel
+observations. A shared Hydra runner handles collection, replay, evaluation,
+logging, and checkpoints; each agent keeps its algorithm-specific update.
+See the [RL architecture audit](rl_repository_audit.md) for extension guidance.
 
-Stable World Model already had episode-aware replay, Gymnasium environment
-wrappers, temporal models (PreJEPA, LeWM, PLDM, TD-MPC2), model-free offline
-policy training, Hydra configurations, optional W&B logging, evaluation, and
-checkpoint helpers. It did not have a native online DrQ-v2 agent or an online
-model-free pixel-RL loop. The audit and TACO notes are in
-[`rl_repository_audit.md`](rl_repository_audit.md).
+## Observation modes and configs
 
-The new RL package reuses `stable_worldmodel.data.ReplayBuffer` and the
-existing Gymnasium environment layer. The online entry point uses Hydra,
-optional W&B, and Gymnasium's rendered RGB frames. It does not depend on or
-import from the local `TACO/` clone.
+Every composed run config includes `algorithm.name` and `observation.mode`.
+State mode accepts a numeric Box observation or a selected numeric Box field
+from a Dict observation. Set `observation.state_key` for Dict observations.
+Pixel mode renders RGB observations, resizes them to `observation.image_size`,
+and concatenates `observation.frame_stack` frames along the channel axis.
 
-## Added files
+Example configs:
 
-- `stable_worldmodel/rl/drqv2.py`: random-shift augmentation, DrQ-v2 pixel
-  encoder, actor, twin critics, target critic, action selection, and updates.
-- `stable_worldmodel/rl/representation.py`: objective factory and temporal
-  InfoNCE, JEPA-style, and PLDM adapters.
-- `scripts/train/drqv2_online.py`: collection, replay, updates, evaluation,
-  optional W&B, checkpoint/resume.
-- `scripts/train/config/drqv2*.yaml`: default, smoke, and sanity configurations.
-- `scripts/rl/local_{smoke,sanity}.sh`: paired GPU commands.
-- `tests/rl/`: unit coverage for objective shapes, gradients, selection, and
-  CPU agent updates.
+| Config | Algorithm | Observation mode |
+|---|---|---|
+| `sac_state` | SAC | State |
+| `sac_pixels` | SAC | Pixels |
+| `drqv2_state` | DrQ-v2 | State |
+| `drqv2` | DrQ-v2 | Pixels |
 
-## Architecture and gradient flow
-
-`DrQV2Agent` owns one pixel encoder shared by the actor, critic, and optional
-representation learner. Observations are augmented and encoded for the critic;
-critic loss updates the encoder. Actor updates use detached features, matching
-the DrQ-v2 convention. Twin target critics are initialized from the online
-critics and Polyak-updated after each optimization step. There is no target
-encoder. The auxiliary optimizer updates the shared encoder and objective
-modules; the future target path is computed under `no_grad`.
-
-`representation.loss=none` constructs no auxiliary module or optimizer and
-preserves the DrQ baseline update path. The auxiliary coefficient is
-`representation.weight`. This keeps algorithm variants in configuration,
-not separate agent classes.
-
-## Objectives
-
-### InfoNCE / TACO-style temporal dynamics
-
-For batch element `i`, encode `o_t` as `z_t`, embed the action sequence
-`a_t ... a_{t+k-1}`, and predict the projection of `z_{t+k}`. The matching
-future observation is the positive; the other batch entries are negatives.
-The objective forms bilinear similarity logits, divides them by
-`representation.temperature`, and applies cross entropy with labels
-`0 ... B-1`. Embeddings are normalized before scoring. The target encoder path
-uses the shared encoder with a separate random-shift augmentation and stops
-gradients; it is not an EMA target.
-
-Logged diagnostics include InfoNCE loss, mean positive and negative logits,
-and temperature. Batch size one is rejected because it has no in-batch
-negatives. `representation.horizon` selects the number of transitions in the
-temporal pair.
-
-### JEPA-style adapter
-
-`representation.loss=jepa` reuses Stable World Model's `CausalPredictor` over
-projected DrQ features and predicts the final detached future feature with an
-MSE loss. This is a small online adapter for the DrQ feature sequence. It does
-not instantiate the full PreJEPA pipeline, which uses pretrained vision
-backbones, token layouts, and its own training setup.
-
-### PLDM adapter
-
-`representation.loss=pldm` projects DrQ features and applies the existing
-`PLDMLoss` temporal alignment and variance/covariance regularizers. Its terms
-are summed into one scalar and multiplied by `representation.weight`.
-
-### LeWM objective adapter
-
-`representation.loss=lewm` uses the existing LeWM action embedder and
-predictor with DrQ pixel features, and combines latent prediction MSE with
-LeWM's SIGReg regularizer (weight `representation.sigreg_weight`, default
-0.09). Gradients update the shared DrQ encoder and the LeWM adapter. This is
-the LeWM objective on DrQ features, not the standalone LeWM ViT encoder and
-full training model.
-
-## Configuration and commands
-
-The default task is `MountainCarContinuous-v0`, which has a normalized
-continuous action space and RGB rendering through Gymnasium. Defaults are
-stored in [`scripts/train/config/drqv2.yaml`](../scripts/train/config/drqv2.yaml).
-The smoke config uses a smaller 36px input and short replay segments; sanity
-uses 10,000 steps. Every update samples temporal clips from `ReplayBuffer`.
-Completed segments are committed every `replay.commit_interval` transitions,
-so training can begin before a long episode ends. Clips never cross segment
-boundaries.
-
-Activate `swm-rl` and run from the repository root. Set `PYTHONPATH` so the
-checkout is used if a different Stable World Model version is installed in the
-environment:
+Run from the repository root after installing the environment dependencies:
 
 ```bash
-# DrQ-v2 baseline
-PYTHONPATH="$PWD" python scripts/train/drqv2_online.py representation.loss=none
-
-# DrQ-v2 + action-conditioned InfoNCE
-PYTHONPATH="$PWD" python scripts/train/drqv2_online.py representation.loss=infonce representation.horizon=2
-
-# Existing Stable World Model objectives/adapters
-PYTHONPATH="$PWD" python scripts/train/drqv2_online.py representation.loss=jepa
-PYTHONPATH="$PWD" python scripts/train/drqv2_online.py representation.loss=pldm
+PYTHONPATH="$PWD" python scripts/train/rl_online.py --config-name=sac_state
+PYTHONPATH="$PWD" python scripts/train/rl_online.py --config-name=sac_pixels
+PYTHONPATH="$PWD" python scripts/train/rl_online.py --config-name=drqv2_state
+PYTHONPATH="$PWD" python scripts/train/rl_online.py --config-name=drqv2
 ```
 
-Quick validation and two-GPU local launch commands:
+The previous `drqv2_online.py` and `sac_taco_online.py` entry points remain as
+thin launchers. Agents are also exported from `stable_worldmodel.rl`; the old
+`SACTACOAgent` name remains as a compatibility alias with the legacy TACO-on
+default.
+
+## Selecting a primary loss and optional add-ons
+
+Auxiliary learning is off by default. Select at most one primary objective
+through the Hydra `wm` config group. Reward prediction and CURL are separate
+optional add-ons, each with its own switch, weight, and parameters. Turn the
+auxiliary path on with `auxiliary.enabled=true`. For example, a pixel run can
+select InfoNCE and enable both add-ons:
 
 ```bash
-bash scripts/rl/local_smoke.sh
-bash scripts/rl/local_sanity.sh
+PYTHONPATH="$PWD" python scripts/train/rl_online.py \
+  --config-name=drqv2 \
+  wm=infonce \
+  auxiliary.enabled=true \
+  auxiliary.wm.horizon=3 \
+  auxiliary.reward_prediction.enabled=true \
+  auxiliary.reward_prediction.horizon=3 \
+  auxiliary.curl.enabled=true
 ```
 
-Evaluation is run periodically during training. To evaluate a saved checkpoint
-without training:
+The registered choices are:
+
+- **`infonce` / TACO:** predict a future encoded observation from the current
+  feature and intervening actions, using the other batch entries as negatives.
+  The learned action encoder is shared with the RL critic. InfoNCE needs at
+  least two samples in a batch.
+- **`lewm`, `jepa`, and `pldm`:** feature-level adapters that reuse compatible
+  components from the existing Stable World Model objectives. They are not the
+  standalone LeWM or PreJEPA image-model training pipelines.
+- **Reward prediction add-on:** predict the discounted reward accumulated over
+  its configured action horizon. It can be enabled alongside the selected
+  primary objective.
+- **CURL add-on:** contrast two independently random-shifted views of the same
+  pixel observation. It can be enabled alongside the selected primary
+  objective; state+CURL configs fail validation.
+
+Choose only one of `infonce`, `lewm`, `jepa`, or `pldm` as the primary `wm`
+loss. Reward prediction and CURL may each be enabled or disabled independently;
+both can be enabled together when the observation mode is pixels. The TACO
+paper describes InfoNCE as its central objective with reward prediction and
+CURL as additional terms. [TACO
+paper](https://papers.neurips.cc/paper_files/paper/2023/file/96d00450ed65531ffe2996daed487536-Paper-Conference.pdf)
+
+For a baseline, select `wm=none` and leave `auxiliary.enabled=false`. For a
+temporal-only run, select InfoNCE:
 
 ```bash
-PYTHONPATH="$PWD" python scripts/train/drqv2_online.py \
-  --config-name drqv2 \
-  resume=./runs/drqv2/drqv2_step_100000.pt evaluation_only=true
+PYTHONPATH="$PWD" python scripts/train/rl_online.py \
+  --config-name=sac_state \
+  wm=infonce \
+  auxiliary.enabled=true \
+  auxiliary.wm.horizon=3
 ```
 
-To resume training, set `resume=...` and omit `evaluation_only=true`. Checkpoints
-contain agent/optimizer state, replay contents, step/episode counts, and
-random-number-generator state. An in-progress environment episode is reset on
-resume.
+The selected Hydra `wm` config is packaged as `auxiliary.wm`; it sets
+`target`, `enabled`, and the primary loss parameters. The primary loss is
+scaled by `auxiliary.wm.weight`. Reward prediction and CURL use their own
+configured weights; the selected terms contribute to one auxiliary update over
+the shared encoder. Replay history covers the longest selected temporal
+horizon and clips stay within committed episode segments. The runner sets
+bootstrap discount to zero only for true terminations, preserving bootstrap
+across time limits.
 
-W&B is off by default. Enable it with
-`wandb.enable=true wandb.project=<project>`; configure `wandb.name`, `group`,
-`tags`, and `run_id` in the same config. Logged metrics include environment
-steps, episodes/rewards, critic and actor losses/Q values, representation
-diagnostics, evaluation reward/length, and FPS.
+## Logging, checkpoints, and validation
 
-## Validation and limits
+`algorithm.name` and `observation.mode` are included in the composed Hydra/W&B
+config and every checkpoint. Logs include the algorithm, environment, and
+observation mode. Checkpoints contain agent and optimizer state, replay, step
+and episode counts, the resolved config, and RNG state. Resume resets any
+in-progress environment episode.
 
-Verified in `swm-rl`:
+Run unit coverage with:
 
-- **Automated tests:** `PYTHONPATH="$PWD" conda run -n swm-rl pytest -q tests/rl` —
-  9 passed. Coverage includes InfoNCE shapes, finite loss, gradients and
-  stop-gradient behavior, target-pair labels, JEPA/PLDM adapters, and CPU
-  updates for baseline and auxiliary agents.
-- **Smoke runs:** baseline and InfoNCE each completed a 120-step CPU run,
-  sampled replay clips, ran optimization, evaluated, and saved checkpoints.
-  Observed one-episode evaluation returns were -0.270 (baseline) and -0.236
-  (InfoNCE); these are smoke outputs, not evidence of a performance
-  improvement.
-- **GPU checks:** after installing the Pascal-compatible wheels, matrix and
-  backward operations passed on both GTX 1080 Ti cards. A DrQ-v2 + InfoNCE
-  optimizer update passed on each card. End-to-end 120-step smoke runs also
-  completed on GPU 0 (baseline, evaluation return -0.001) and GPU 1 (InfoNCE,
-  evaluation return -4.909). These remain correctness checks, not performance
-  comparisons.
-- **Checkpoint evaluation:** an InfoNCE checkpoint loaded and ran the
-  evaluation-only path.
-- **W&B-disabled mode:** verified in both smoke runs without credentials.
-- **Compilation:** Python compileall and `git diff --check` passed.
+```bash
+PYTHONPATH="$PWD" conda run -n swm-rl pytest -q tests/rl
+```
 
-The environment originally had PyTorch 2.14.0+cu130, whose kernels omit the
-cards' sm_61 architecture. It now has PyTorch 2.14.0+cu126 and torchvision
-0.29.0+cu126. The local environment was also missing pytest, OpenCV, imageio,
-Hydra, and pygame; these were installed into `swm-rl` for the checks, without
-changing repository dependency files.
-
-The Reacher-hard comparison config and launcher are described in
-[`rl_reacher_hard_benchmark.md`](rl_reacher_hard_benchmark.md). The full
-standalone LeWorldModel and PreJEPA stacks are not substituted for their
-DrQ-feature objective adapters.
+The suite covers both algorithms in state and pixel modes, baseline updates,
+primary objectives plus reward/CURL add-ons, state+CURL rejection, selected
+Dict state inputs, loss weights, action-token gradients, and truncation
+bootstrapping. Short CPU smoke runs cover all four algorithm/modality
+combinations. These checks verify execution and do not measure performance.

@@ -1,0 +1,8 @@
+defaults:
+  - drqv2
+  - _self_
+
+observation:
+  mode: state
+
+checkpoint_dir: ./runs/drqv2_state
