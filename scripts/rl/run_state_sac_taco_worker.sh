@@ -9,7 +9,10 @@ fi
 gpu="$1"
 job_file="$2"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-run_id="sac_state_3env_100k_v1"
+run_id="${RUN_ID:-sac_state_3env_1m_v1}"
+num_steps="${NUM_STEPS:-1000000}"
+evaluation_frequency="${EVALUATION_FREQUENCY:-50000}"
+checkpoint_frequency="${CHECKPOINT_FREQUENCY:-100000}"
 log_root="${repo_root}/logs/rl/${run_id}"
 run_root="${repo_root}/runs/rl/${run_id}"
 cursor_file="${job_file}.cursor"
@@ -89,8 +92,8 @@ run_job() {
       ;;
   esac
 
-  group="state-sac-taco-${task}-100k-v1"
-  run_name="state-sac-${task}-${method}-seed-${seed}-100k-v1"
+  group="state-sac-taco-${task}-1m-v1"
+  run_name="state-sac-${task}-${method}-seed-${seed}-1m-v1"
   log_path="${log_root}/${task}/${method}/seed_${seed}.log"
   checkpoint_dir="${run_root}/${task}/${method}/seed_${seed}"
   mkdir -p "$(dirname "${log_path}")" "${checkpoint_dir}"
@@ -104,17 +107,17 @@ run_job() {
       --config-name="${config}" \
       "seed=${seed}" \
       device=cuda:0 \
-      num_steps=100000 \
+      "num_steps=${num_steps}" \
       learning_starts=5000 \
       batch_size=256 \
       updates_per_step=1 \
       max_episode_steps=500 \
       replay.capacity=100000 \
       replay.commit_interval=1000 \
-      evaluation.frequency=10000 \
+      "evaluation.frequency=${evaluation_frequency}" \
       evaluation.episodes=3 \
       logging.frequency=1000 \
-      checkpoint_frequency=25000 \
+      "checkpoint_frequency=${checkpoint_frequency}" \
       agent.feature_dim=256 \
       agent.hidden_dim=256 \
       "checkpoint_dir=${checkpoint_dir}" \
@@ -123,7 +126,7 @@ run_job() {
       "wandb.project=${wandb_project}" \
       "wandb.group=${group}" \
       "wandb.name=${run_name}" \
-      "wandb.tags=[state,sac,${task},${method},preliminary]" \
+      "wandb.tags=[state,sac,${task},${method},1m]" \
       "${auxiliary_overrides[@]}" \
       2>&1 | tee "${log_path}"
 

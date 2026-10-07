@@ -8,7 +8,11 @@ gpu_b="${GPU_B:-5}"
 # CUDA omits the device that NVML reports as broken index 6, so the idle
 # nvidia-smi GPU 7 is selected through CUDA_VISIBLE_DEVICES=6.
 gpu_c="${GPU_C:-6}"
-run_id="sac_state_3env_100k_v1"
+run_id="${RUN_ID:-sac_state_3env_1m_v1}"
+num_steps="${NUM_STEPS:-1000000}"
+seeds="${SEEDS:-1 2 3 4 5}"
+evaluation_frequency="${EVALUATION_FREQUENCY:-50000}"
+checkpoint_frequency="${CHECKPOINT_FREQUENCY:-100000}"
 job_root="${repo_root}/logs/rl/${run_id}"
 job_file="${job_root}/jobs.tsv"
 worker="${repo_root}/scripts/rl/run_state_sac_taco_worker.sh"
@@ -69,7 +73,8 @@ done
 
 mkdir -p "${job_root}"
 : >"${job_file}"
-for seed in 0 1 2 3 4; do
+read -r -a seed_list <<<"${seeds}"
+for seed in "${seed_list[@]}"; do
   for task in finger-turn-hard acrobot-swingup reacher-hard; do
     printf '%s\t%s\t%s\n' "${task}" baseline "${seed}" >>"${job_file}"
     printf '%s\t%s\t%s\n' "${task}" taco "${seed}" >>"${job_file}"
@@ -82,9 +87,10 @@ W&B: https://api.wandb.ai/marcopra/swm-test
 Tasks: Finger Turn Hard, Acrobot Swingup, Reacher Hard (proprioceptive state observations)
 Arms: SAC baseline; SAC + temporal InfoNCE + reward prediction (equal weights)
 CURL: disabled (pixel-only)
-Seeds: 0, 1, 2, 3, 4 per task and arm (30 runs total)
-Budget: 100000 agent steps, batch 256, learning starts at 5000
-Evaluation: every 10000 steps, 3 episodes
+Seeds: ${seeds} per task and arm ($(( ${#seed_list[@]} * 6 )) runs total)
+Budget: ${num_steps} agent steps, batch 256, learning starts at 5000
+Evaluation: every ${evaluation_frequency} steps, 3 episodes
+Checkpoint: every ${checkpoint_frequency} steps
 CUDA_VISIBLE_DEVICES workers: ${gpu_a} (one new worker), ${gpu_b} (one new worker), ${gpu_c} (two new workers)
 CUDA device ${gpu_c} maps to idle nvidia-smi GPU 7; NVML cannot open index 6.
 Existing long runs were observed on GPUs 0-5; this plan adds no more than one
@@ -112,7 +118,7 @@ echo 'Started the SAC state benchmark in four tmux worker sessions:'
 for session in "${sessions[@]}"; do
   echo "  ${session}"
 done
-echo "Tasks: 3, arms: 2, seeds per task/arm: 5, total seed runs: 30"
+echo "Tasks: 3, arms: 2, seeds: ${seeds}, total seed runs: $(( ${#seed_list[@]} * 6 ))"
 echo "W&B project: marcopra/swm-test"
 echo "GPU allocation: nvidia-smi ${gpu_a}, ${gpu_b}, and 7 (CUDA-visible ${gpu_c} for the idle GPU 7)"
 echo "Logs and plan: ${job_root}"
