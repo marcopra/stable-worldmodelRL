@@ -1,0 +1,8 @@
+defaults:
+  - sac_taco_state
+  - _self_
+
+env: swm/PendulumControl-v1
+env_kwargs: null
+max_episode_steps: 200
+checkpoint_dir: ./runs/sac_taco_state/pendulum_control
