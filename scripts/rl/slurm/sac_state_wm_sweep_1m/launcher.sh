@@ -18,12 +18,17 @@ case "${mpc_enabled,,}" in
     exit 2
     ;;
 esac
-env_keys=(finger_turn_hard acrobot_swingup reacher_hard pendulum_control)
+env_keys=(
+  # finger_turn_hard 
+  # acrobot_swingup 
+  reacher_hard 
+  # pendulum_control
+)
 env_configs=(
-  sac_taco_state
-  sac_taco_state_acrobot
+  # sac_taco_state
+  # sac_taco_state_acrobot
   sac_taco_state_reacher_hard
-  sac_taco_state_pendulum
+  # sac_taco_state_pendulum
 )
 
 for seed in $seeds; do
