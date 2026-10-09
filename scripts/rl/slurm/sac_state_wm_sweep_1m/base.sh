@@ -8,7 +8,7 @@
 #SBATCH --error=%j.err
 #SBATCH --partition=gpua
 
-set -euo pipefail
+set -eo pipefail
 
 cd "${SLURM_SUBMIT_DIR:?}"
 
@@ -25,6 +25,7 @@ esac
 # Load environment
 source ~/.bashrc
 conda activate swm-rl
+set -u
 
 export HYDRA_FULL_ERROR=1
 export PYTHONPATH="${SLURM_SUBMIT_DIR}:${PYTHONPATH:-}"

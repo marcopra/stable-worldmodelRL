@@ -8,11 +8,12 @@
 #SBATCH --error=%j.err
 #SBATCH --partition=gpuv
 
-set -euo pipefail
+set -eo pipefail
 
 cd "$SLURM_SUBMIT_DIR"
 source ~/.bashrc
 conda activate swm-rl
+set -u
 
 export HYDRA_FULL_ERROR=1
 export PYTHONPATH="$SLURM_SUBMIT_DIR:${PYTHONPATH:-}"
