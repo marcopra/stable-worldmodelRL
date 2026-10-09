@@ -166,6 +166,15 @@ def _optional_loss_config(cfg, name: str) -> dict:
     return OmegaConf.to_container(cfg.auxiliary[name], resolve=True)
 
 
+def _mpc_config(cfg) -> dict:
+    config = cfg.get('mpc', {})
+    if config is None:
+        return {}
+    if OmegaConf.is_config(config):
+        return OmegaConf.to_container(config, resolve=True)
+    return dict(config)
+
+
 def _selected_auxiliary_losses(cfg) -> list[str]:
     if not cfg.auxiliary.enabled:
         return []
@@ -199,6 +208,9 @@ def _replay_history(cfg) -> int:
         if cfg.auxiliary.reward_prediction.enabled:
             horizons.append(int(cfg.auxiliary.reward_prediction.horizon))
     nstep = int(cfg.agent.nstep) if cfg.algorithm.name == 'drqv2' else 1
+    mpc_config = _mpc_config(cfg)
+    if mpc_config.get('enabled', False):
+        horizons.append(int(mpc_config.get('horizon', 5)))
     return max(2, max(horizons) + 1, nstep + 1)
 
 
@@ -206,6 +218,7 @@ def _make_agent(cfg, observation_shape: tuple[int, ...], action_dim: int):
     world_model_config = _world_model_config(cfg)
     reward_prediction_config = _optional_loss_config(cfg, 'reward_prediction')
     curl_config = _optional_loss_config(cfg, 'curl')
+    mpc_config = _mpc_config(cfg)
     common = {
         'obs_shape': observation_shape,
         'action_dim': action_dim,
@@ -218,6 +231,7 @@ def _make_agent(cfg, observation_shape: tuple[int, ...], action_dim: int):
         'world_model_config': world_model_config,
         'reward_prediction_config': reward_prediction_config,
         'curl_config': curl_config,
+        'mpc_config': mpc_config,
         'augmentation_pad': int(cfg.agent.augmentation_pad),
     }
     if cfg.algorithm.name == 'sac':
@@ -253,6 +267,7 @@ def _make_agent(cfg, observation_shape: tuple[int, ...], action_dim: int):
             world_model_config=world_model_config,
             reward_prediction_config=reward_prediction_config,
             curl_config=curl_config,
+            mpc_config=mpc_config,
             augmentation_pad=int(cfg.agent.augmentation_pad),
             nstep=int(cfg.agent.nstep),
         )
@@ -299,6 +314,7 @@ def _checkpoint(
             'algorithm': str(cfg.algorithm.name),
             'world_model': str(cfg.auxiliary.wm.target),
             'auxiliary_losses': _selected_auxiliary_losses(cfg),
+            'mpc_enabled': bool(_mpc_config(cfg).get('enabled', False)),
             'observation_mode': str(cfg.observation.mode),
             'agent': agent.state_dict(),
             'replay': replay,
@@ -326,6 +342,8 @@ def _evaluate(cfg, agent, step: int) -> dict[str, float]:
     successes: list[float] = []
     try:
         for episode in range(int(cfg.evaluation.episodes)):
+            if hasattr(agent, 'reset'):
+                agent.reset()
             raw, info = env.reset(seed=int(cfg.seed) + 100_000 + episode)
             frames: deque[np.ndarray] = deque(
                 maxlen=int(cfg.observation.frame_stack)
@@ -336,6 +354,8 @@ def _evaluate(cfg, agent, step: int) -> dict[str, float]:
             while not done and (
                 cfg.max_episode_steps <= 0 or length < cfg.max_episode_steps
             ):
+                # Any latent planning stays inside act(); it does not advance
+                # the real environment-step counter below.
                 action = agent.act(observation, step=step, eval_mode=True)
                 raw, reward, terminated, truncated, info = env.step(action)
                 observation = _observation(env, raw, cfg, frames)
@@ -351,6 +371,8 @@ def _evaluate(cfg, agent, step: int) -> dict[str, float]:
             if success_values:
                 successes.append(float(np.max(success_values)))
     finally:
+        if hasattr(agent, 'reset'):
+            agent.reset()
         env.close()
 
     metrics = {
@@ -400,6 +422,12 @@ def train(cfg) -> None:
                 'match configured world model '
                 f'{cfg.auxiliary.wm.target!r}'
             )
+        saved_mpc = checkpoint.get('mpc_enabled')
+        if saved_mpc is not None and bool(saved_mpc) != bool(cfg.mpc.enabled):
+            raise ValueError(
+                f'Checkpoint MPC setting {saved_mpc!r} does not match '
+                f'configured setting {bool(cfg.mpc.enabled)!r}'
+            )
         saved_observation_mode = checkpoint.get('observation_mode')
         if (
             saved_observation_mode
@@ -446,7 +474,7 @@ def train(cfg) -> None:
     algorithm_name = str(cfg.algorithm.name)
     logger.info(
         'algorithm=%s observation=%s env=%s auxiliary=%s wm=%s '
-        'reward_prediction=%s curl=%s device=%s',
+        'reward_prediction=%s curl=%s mpc=%s device=%s',
         algorithm_name,
         cfg.observation.mode,
         cfg.env,
@@ -454,6 +482,7 @@ def train(cfg) -> None:
         cfg.auxiliary.wm.target,
         cfg.auxiliary.reward_prediction.enabled,
         cfg.auxiliary.curl.enabled,
+        cfg.mpc.enabled,
         device,
     )
     wandb_run = None
@@ -496,6 +525,8 @@ def train(cfg) -> None:
                 if step < learning_starts
                 else agent.act(observation, step=step, eval_mode=False)
             )
+            # Planning rollouts happen inside agent.act(); this one real
+            # environment transition is the only step counted below.
             next_raw, reward, terminated, truncated, info = env.step(action)
             episode_length += 1
             hit_step_limit = (
@@ -552,6 +583,8 @@ def train(cfg) -> None:
                     info.get('success') if isinstance(info, dict) else None,
                 )
                 raw_observation, _ = env.reset()
+                if hasattr(agent, 'reset'):
+                    agent.reset()
                 observation = _observation(
                     env, raw_observation, cfg, frames, reset=True
                 )

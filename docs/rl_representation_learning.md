@@ -98,6 +98,37 @@ horizon and clips stay within committed episode segments. The runner sets
 bootstrap discount to zero only for true terminations, preserving bootstrap
 across time limits.
 
+## Optional latent MPC
+
+SAC and DrQ-v2 can use weighted-elite MPC over the selected action-conditioned
+WM. The planner reuses the InfoNCE or LeWM latent predictor and the existing
+discounted reward-prediction head; it does not instantiate a second dynamics
+or reward model. Therefore `wm=none` remains pure model-free SAC/DrQ-v2 and
+cannot be combined with MPC. The current online planner supports InfoNCE and
+LeWM, which expose action-conditioned latent rollouts.
+
+Enable it with `mpc.enabled=true`, select `wm=infonce` or `wm=lewm`, and enable
+`auxiliary.reward_prediction`. The reward-prediction horizon must equal
+`mpc.horizon`; for InfoNCE, `auxiliary.wm.horizon` must also equal it. LeWM is
+rolled out autoregressively using its trained predictor and requires
+`auxiliary.wm.horizon >= mpc.horizon`. `mpc.value_coef`
+weights the TD-MPC2-style two-hot value-prediction loss (default `0.1`); set it
+to `0` to disable value learning and terminal-value bootstrapping. The value
+head is a twin categorical Q estimator trained with TD-MPC2-style bootstrapped
+targets from its slowly updated target Q heads; the model-free SAC/DrQ-v2
+critics remain part of their original algorithm updates.
+
+`mpc.start_steps` delays planning until the selected WM and reward head have
+received replay updates. `mpc.horizon`, `mpc.num_samples`, `mpc.num_elites`,
+`mpc.iterations`, and `mpc.num_pi_trajs` control planning. Planning stays
+inside `agent.act()`; only real `env.step()` calls advance the training
+environment-step counter. Episode resets clear the shifted action-sequence
+warm start, and checkpoints store the optional value head and shared optimizer.
+
+For state SAC experiments on Finger Turn Hard, Acrobot Swingup, and Reacher
+Hard, submit
+`bash scripts/rl/slurm/sac_state_mpc_sweep_1m/launcher.sh`.
+
 ## Logging, checkpoints, and validation
 
 `algorithm.name` and `observation.mode` are included in the composed Hydra/W&B

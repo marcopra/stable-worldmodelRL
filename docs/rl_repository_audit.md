@@ -46,6 +46,7 @@ training scripts remain separate from these online RL adapters.
 |---|---:|---:|
 | SAC baseline | Yes | Yes |
 | DrQ-v2 baseline | Yes | Yes |
+| TD-MPC2-style latent MPC action selection | Yes | Yes |
 | Temporal InfoNCE (TACO) | Yes | Yes |
 | LeWM adapter | Yes | Yes |
 | JEPA adapter | Yes | Yes |
@@ -56,6 +57,16 @@ training scripts remain separate from these online RL adapters.
 Each run selects at most one primary loss from InfoNCE, LeWM, JEPA, or PLDM.
 Reward prediction and CURL are explicit optional add-ons; either or both may be
 enabled with the selected primary loss. CURL requires pixels.
+
+Latent MPC is an optional action-selection path for SAC and DrQ-v2
+(`mpc.enabled=true`) when InfoNCE or LeWM and the existing reward-prediction
+add-on are enabled. It reuses their trained latent and reward predictors and
+performs policy-seeded weighted-elite planning. The optional two-hot value
+prediction loss trains a twin categorical Q estimator with slowly updated
+target Q heads; its weight defaults to `0.1` and zero disables value learning
+and terminal bootstrap. The SAC/DrQ-v2 critics keep their original updates.
+`wm=none` is model-free and cannot use MPC. Planning runs inside agent action
+selection and does not add imagined steps to the environment-step count.
 
 State mode accepts a numeric Box observation, or a numeric Box field selected
 with `observation.state_key` from a Dict observation. Pixel mode renders RGB

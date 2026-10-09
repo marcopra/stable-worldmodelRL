@@ -10,7 +10,11 @@ from torch.nn import functional as F
 
 from ..augmentation import RandomShiftsAug
 from ..encoders import make_observation_encoder, pixel_batch_to_nchw
+from ..mpc import LatentMPCPlanner, ValuePredictionHead
 from ..representation import (
+    InfoNCERepresentation,
+    LeWMTemporalRepresentation,
+    RewardPredictionRepresentation,
     build_auxiliary_losses,
     validate_world_model_config,
 )
@@ -102,6 +106,7 @@ class DrQV2Agent:
         world_model_config: dict | None = None,
         reward_prediction_config: dict | None = None,
         curl_config: dict | None = None,
+        mpc_config: dict | None = None,
         augmentation_pad: int = 4,
         nstep: int = 1,
     ):
@@ -244,13 +249,101 @@ class DrQV2Agent:
         self.encoder_opt = torch.optim.Adam(encoder_parameters, lr=lr)
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=lr)
-        self.world_model_opt = (
-            torch.optim.Adam(
-                list(self.encoder.parameters())
-                + list(self.auxiliary_losses.parameters()),
-                lr=lr,
+        self.mpc_config = dict(mpc_config or {})
+        self.mpc_enabled = bool(self.mpc_config.get('enabled', False))
+        self.mpc_value_coef = float(self.mpc_config.get('value_coef', 0.1))
+        if self.mpc_value_coef < 0:
+            raise ValueError('mpc.value_coef must be non-negative')
+        self.mpc_value = None
+        self.mpc_value_target = None
+        self.mpc_planner = None
+        if self.mpc_enabled:
+            if not isinstance(
+                self.world_model,
+                (InfoNCERepresentation, LeWMTemporalRepresentation),
+            ):
+                raise ValueError(
+                    'MPC requires an action-conditioned latent WM '
+                    '(currently wm.target=infonce or lewm); wm=none remains '
+                    'model-free'
+                )
+            if not isinstance(
+                self.reward_prediction, RewardPredictionRepresentation
+            ):
+                raise ValueError(
+                    'MPC requires the existing auxiliary reward-prediction '
+                    'loss to be enabled'
+                )
+            if self.auxiliary_losses.reward_prediction_weight <= 0:
+                raise ValueError(
+                    'MPC requires auxiliary.reward_prediction.weight > 0'
+                )
+            if self.world_model_weight <= 0:
+                raise ValueError(
+                    'MPC requires auxiliary.wm.weight > 0'
+                )
+            mpc_horizon = int(self.mpc_config.get('horizon', 5))
+            if self.reward_prediction.horizon != mpc_horizon:
+                raise ValueError(
+                    'MPC horizon must match auxiliary.reward_prediction.horizon'
+                )
+            if (
+                isinstance(self.world_model, InfoNCERepresentation)
+                and self.world_model.horizon != mpc_horizon
+            ):
+                raise ValueError(
+                    'InfoNCE MPC horizon must match auxiliary.wm.horizon'
+                )
+            if (
+                isinstance(self.world_model, LeWMTemporalRepresentation)
+                and self.world_model.horizon < mpc_horizon
+            ):
+                raise ValueError(
+                    'LeWM MPC horizon must not exceed auxiliary.wm.horizon'
+                )
+            if self.mpc_value_coef > 0:
+                self.mpc_value = ValuePredictionHead(
+                    self.world_model.mpc_latent_dim,
+                    self.action_dim,
+                    int(self.mpc_config.get('value_hidden_dim', hidden_dim)),
+                    num_bins=int(self.mpc_config.get('value_num_bins', 101)),
+                    vmin=float(self.mpc_config.get('value_vmin', -10.0)),
+                    vmax=float(self.mpc_config.get('value_vmax', 10.0)),
+                ).to(self.device)
+                self.mpc_value_target = copy.deepcopy(self.mpc_value).to(
+                    self.device
+                )
+                for parameter in self.mpc_value_target.parameters():
+                    parameter.requires_grad_(False)
+            self.mpc_planner = LatentMPCPlanner(
+                action_dim=self.action_dim,
+                **{
+                    key: self.mpc_config[key]
+                    for key in (
+                        'horizon',
+                        'num_samples',
+                        'num_elites',
+                        'iterations',
+                        'num_pi_trajs',
+                        'min_std',
+                        'max_std',
+                        'temperature',
+                        'exploration_noise',
+                    )
+                    if key in self.mpc_config
+                },
             )
+        world_model_parameters = (
+            list(self.encoder.parameters())
+            + list(self.auxiliary_losses.parameters())
             if self.auxiliary_losses is not None
+            else []
+        )
+        if self.mpc_value is not None:
+            world_model_parameters += list(self.mpc_value.parameters())
+        self.world_model_opt = (
+            torch.optim.Adam(world_model_parameters, lr=lr)
+            if world_model_parameters
             else None
         )
         self.aug = RandomShiftsAug(
@@ -295,6 +388,47 @@ class DrQV2Agent:
             return action
         return self.action_encoder(action)
 
+    def _mpc_value_loss(
+        self,
+        features: torch.Tensor,
+        rewards: torch.Tensor,
+        discounts: torch.Tensor,
+        step: int,
+    ) -> torch.Tensor:
+        """Train the WM-latent value head from DrQ-v2 TD targets."""
+        if self.mpc_value is None:
+            return features.new_zeros(())
+        horizon = self.mpc_planner.horizon
+        if features.shape[1] < horizon + 1:
+            raise ValueError('MPC value loss needs horizon + 1 observations')
+
+        total = features.new_zeros(())
+        rho = float(self.mpc_config.get('rho', 0.5))
+        for index in range(horizon):
+            current_latent = self.world_model.encode_mpc_latent(
+                features[:, index]
+            )
+            with torch.no_grad():
+                next_feature = features[:, index + 1].detach()
+                mean, std = self.actor(next_feature, self._stddev(step))
+                next_action = self._sample_action(
+                    mean, std, self.stddev_clip
+                )
+                next_latent = self.world_model.encode_mpc_latent(next_feature)
+                target_q1, target_q2 = self.mpc_value_target(
+                    next_latent, next_action
+                )
+                target = (
+                    rewards[:, index].reshape(-1, 1)
+                    + self.discount
+                    * discounts[:, index].reshape(-1, 1)
+                    * torch.minimum(target_q1, target_q2)
+                )
+            total = total + rho**index * self.mpc_value.loss(
+                current_latent, actions[:, index], target
+            )
+        return total / horizon
+
     def act(self, obs, step: int = 0, eval_mode: bool = False):
         with torch.no_grad():
             obs = torch.as_tensor(obs, device=self.device)
@@ -303,14 +437,44 @@ class DrQV2Agent:
             elif self.observation_mode == 'state':
                 obs = obs.float().reshape(1, -1)
             feature = self.encoder(self._as_nchw(obs))
-            mean, std = self.actor(feature, self._stddev(step))
-            if eval_mode:
-                action = mean
+            mpc_start_step = max(
+                self.num_expl_steps,
+                int(self.mpc_config.get('start_steps', 0)),
+            )
+            if self.mpc_enabled and step >= mpc_start_step:
+                action = self.mpc_planner.plan(
+                    feature,
+                    self.world_model,
+                    self.reward_prediction,
+                    lambda latent: self._planner_policy_action(
+                        latent, step, eval_mode
+                    ),
+                    self.mpc_value,
+                    discount=self.discount,
+                    eval_mode=eval_mode,
+                ).unsqueeze(0)
             else:
-                action = self._sample_action(mean, std)
-                if step < self.num_expl_steps:
-                    action.uniform_(-1.0, 1.0)
+                mean, std = self.actor(feature, self._stddev(step))
+                if eval_mode:
+                    action = mean
+                else:
+                    action = self._sample_action(mean, std)
+                    if step < self.num_expl_steps:
+                        action.uniform_(-1.0, 1.0)
         return action[0].cpu().numpy()
+
+    def _planner_policy_action(
+        self, feature: torch.Tensor, step: int, eval_mode: bool
+    ) -> tuple[torch.Tensor, None]:
+        mean, std = self.actor(feature, self._stddev(step))
+        if eval_mode:
+            return mean, None
+        return self._sample_action(mean, std), None
+
+    def reset(self) -> None:
+        """Reset episode-scoped planner state."""
+        if self.mpc_planner is not None:
+            self.mpc_planner.reset()
 
     def update(
         self, batch: dict[str, torch.Tensor], step: int = 0
@@ -431,14 +595,32 @@ class DrQV2Agent:
                 discounts=discounts,
                 curl_features=curl_features,
             )
+            value_loss = self._mpc_value_loss(
+                temporal, rewards, discounts, step
+            )
             weighted_loss = auxiliary_metrics['loss']
+            if self.mpc_value is not None:
+                weighted_loss = (
+                    weighted_loss + self.mpc_value_coef * value_loss
+                )
             weighted_loss.backward()
             self.world_model_opt.step()
+            if self.mpc_value_target is not None:
+                with torch.no_grad():
+                    for source, target in zip(
+                        self.mpc_value.parameters(),
+                        self.mpc_value_target.parameters(),
+                    ):
+                        target.lerp_(source, self.tau)
             for name, value in auxiliary_metrics.items():
                 if torch.is_tensor(value) and value.numel() == 1:
                     metrics['auxiliary/loss' if name == 'loss' else name] = (
                         float(value.detach())
                     )
+
+            if self.mpc_enabled:
+                metrics['mpc/value_loss'] = float(value_loss.detach())
+                metrics['mpc/value_weight'] = self.mpc_value_coef
 
         return metrics
 
@@ -465,6 +647,16 @@ class DrQV2Agent:
             'world_model_opt': (
                 self.world_model_opt.state_dict()
                 if self.world_model_opt is not None
+                else None
+            ),
+            'mpc_value': (
+                self.mpc_value.state_dict()
+                if self.mpc_value is not None
+                else None
+            ),
+            'mpc_value_target': (
+                self.mpc_value_target.state_dict()
+                if self.mpc_value_target is not None
                 else None
             ),
         }
@@ -512,3 +704,14 @@ class DrQV2Agent:
             and world_model_opt_state is not None
         ):
             self.world_model_opt.load_state_dict(world_model_opt_state)
+        if self.mpc_value is not None:
+            mpc_value_state = state.get('mpc_value')
+            if mpc_value_state is None:
+                raise ValueError('Checkpoint has no MPC value-prediction state')
+            self.mpc_value.load_state_dict(mpc_value_state)
+            target_state = state.get('mpc_value_target')
+            if target_state is None:
+                raise ValueError(
+                    'Checkpoint has no MPC target value-prediction state'
+                )
+            self.mpc_value_target.load_state_dict(target_state)

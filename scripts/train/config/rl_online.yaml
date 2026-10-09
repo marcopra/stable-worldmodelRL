@@ -46,6 +46,30 @@ auxiliary:
     weight: 1.0
     projection_dim: 128
 
+# Optional model-predictive action selection. Latent rollouts are computed by
+# the agent and do not count as environment interactions.
+mpc:
+  enabled: false
+  start_steps: 10000
+  horizon: 5
+  num_samples: 512
+  num_elites: 64
+  iterations: 6
+  num_pi_trajs: 32
+  min_std: 0.05
+  max_std: 0.5
+  temperature: 0.5
+  exploration_noise: 1.0
+  # Set to 0 to disable the TD-MPC2-style value-prediction objective and
+  # terminal bootstrap. A non-zero default keeps MPC's finite-horizon plans
+  # bootstrapped with the value of the predicted terminal WM latent.
+  value_coef: 0.1
+  value_hidden_dim: 256
+  value_num_bins: 101
+  value_vmin: -10.0
+  value_vmax: 10.0
+  rho: 0.5
+
 replay:
   capacity: 50000
   commit_interval: 1000

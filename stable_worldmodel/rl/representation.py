@@ -58,6 +58,30 @@ class InfoNCERepresentation(nn.Module):
         )
         self.bilinear = nn.Parameter(torch.eye(projection_dim))
 
+    @property
+    def mpc_latent_dim(self) -> int:
+        return self.latent_action_dim
+
+    def encode_mpc_latent(self, features: torch.Tensor) -> torch.Tensor:
+        """Project encoder features into the WM's normalized prediction space."""
+        return F.normalize(self.projector(features).float(), dim=-1)
+
+    def predict_mpc_latent(
+        self, features: torch.Tensor, actions: torch.Tensor
+    ) -> torch.Tensor:
+        """Predict the configured-horizon endpoint using the trained predictor."""
+        if actions.ndim != 3 or actions.shape[1] != self.horizon:
+            raise ValueError(
+                f'InfoNCE MPC needs exactly {self.horizon} planned actions; '
+                f'got shape {tuple(actions.shape)}'
+            )
+        source = self.projector(features)
+        encoded_actions = self.encode_action(actions)
+        prediction_input = torch.cat(
+            [source, encoded_actions.flatten(start_dim=1)], dim=-1
+        )
+        return F.normalize(self.predictor(prediction_input).float(), dim=-1)
+
     def encode_action(self, action: torch.Tensor) -> torch.Tensor:
         """Return the action token also consumed by the TACO RL critic."""
         return self.action_encoder(action)
@@ -239,6 +263,7 @@ class LeWMTemporalRepresentation(nn.Module):
         if horizon < 1:
             raise ValueError(f'horizon must be >= 1, got {horizon}')
         self.horizon = int(horizon)
+        self.projection_dim = int(projection_dim)
         self.sigreg_weight = float(sigreg_weight)
         self.projector = nn.Sequential(
             nn.Linear(feature_dim, projection_dim),
@@ -267,6 +292,35 @@ class LeWMTemporalRepresentation(nn.Module):
             output_dim=projection_dim,
         )
         self.sigreg = SIGReg(knots=17, num_proj=sigreg_num_proj)
+
+    @property
+    def mpc_latent_dim(self) -> int:
+        return self.projection_dim
+
+    def encode_mpc_latent(self, features: torch.Tensor) -> torch.Tensor:
+        """Project encoder features into LeWM's prediction space."""
+        return self.projector(features)
+
+    def predict_mpc_latent(
+        self, features: torch.Tensor, actions: torch.Tensor
+    ) -> torch.Tensor:
+        """Autoregressively roll out with LeWM's trained one-step predictor."""
+        if actions.ndim != 3:
+            raise ValueError('planned actions must have shape (B,H,A)')
+        if actions.shape[1] > self.horizon:
+            raise ValueError(
+                f'LeWM MPC horizon must be <= its training horizon '
+                f'({self.horizon}), got {actions.shape[1]}'
+            )
+        latent_history = [self.encode_mpc_latent(features)]
+        action_embeddings = self.action_encoder(actions)
+        for index in range(actions.shape[1]):
+            state_context = torch.stack(latent_history, dim=1)
+            prediction = self.predictor(
+                state_context, action_embeddings[:, : index + 1]
+            )
+            latent_history.append(self.pred_proj(prediction[:, -1]))
+        return latent_history[-1]
 
     def forward(
         self,
@@ -331,6 +385,20 @@ class RewardPredictionRepresentation(nn.Module):
             nn.Linear(hidden_dim, 1),
         )
 
+    def predict_return(
+        self, features: torch.Tensor, actions: torch.Tensor
+    ) -> torch.Tensor:
+        """Predict the same discounted reward clip optimized by this loss."""
+        if actions.ndim != 3 or actions.shape[1] != self.horizon:
+            raise ValueError(
+                f'Reward prediction MPC needs exactly {self.horizon} planned '
+                f'actions; got shape {tuple(actions.shape)}'
+            )
+        action_sequence = actions.flatten(start_dim=1)
+        return self.predictor(
+            torch.cat([features, action_sequence], dim=-1)
+        )
+
     def forward(
         self,
         features: torch.Tensor,
@@ -343,9 +411,8 @@ class RewardPredictionRepresentation(nn.Module):
             raise ValueError(
                 f'reward prediction needs {self.horizon} transitions'
             )
-        action_sequence = actions[:, : self.horizon].flatten(start_dim=1)
-        prediction = self.predictor(
-            torch.cat([features[:, 0], action_sequence], dim=-1)
+        prediction = self.predict_return(
+            features[:, 0], actions[:, : self.horizon]
         )
         reward = rewards[:, : self.horizon]
         mask = discounts[:, : self.horizon]
