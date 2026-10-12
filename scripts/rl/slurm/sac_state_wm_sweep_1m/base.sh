@@ -32,10 +32,12 @@ export PYTHONPATH="${SLURM_SUBMIT_DIR}:${PYTHONPATH:-}"
 
 auxiliary_overrides=(
   auxiliary.enabled=true
+  auxiliary.sequence_length=3
   auxiliary.wm.enabled=true
   auxiliary.wm.weight=1.0
   auxiliary.wm.horizon=3
   auxiliary.reward_prediction.enabled=true
+  auxiliary.reward_prediction.mode=clip_return
   auxiliary.reward_prediction.weight=1.0
   auxiliary.reward_prediction.horizon=3
   auxiliary.curl.enabled=false
@@ -69,19 +71,27 @@ case ${WM_LOSS} in
   pldm)
     auxiliary_overrides+=(auxiliary.wm.projection_dim=128)
     ;;
+  consistency)
+    auxiliary_overrides+=(
+      auxiliary.wm.projection_dim=128
+      auxiliary.wm.hidden_dim=256
+      auxiliary.wm.rho=0.5
+    )
+    ;;
 esac
 
 run_id="sac-state-wm-sweep-1m-slurm-v1"
 if [[ "${MPC_ENABLED}" == true ]]; then
   case "${WM_LOSS}" in
-    infonce|lewm) ;;
+    infonce|lewm|consistency) ;;
     *)
-      echo "MPC requires an action-conditioned WM (infonce or lewm); got WM_LOSS=${WM_LOSS}" >&2
+      echo "MPC requires an action-conditioned one-step WM (infonce, lewm, or consistency); got WM_LOSS=${WM_LOSS}" >&2
       exit 2
       ;;
   esac
   run_id="${run_id}-mpc"
   mpc_horizon="${MPC_HORIZON:-5}"
+  mpc_sequence_length="${MPC_SEQUENCE_LENGTH:-${mpc_horizon}}"
   mpc_overrides=(
     mpc.enabled=true
     mpc.start_steps="${MPC_START_STEPS:-10000}"
@@ -93,8 +103,9 @@ if [[ "${MPC_ENABLED}" == true ]]; then
     mpc.num_pi_trajs="${MPC_NUM_PI_TRAJS:-32}"
   )
   auxiliary_overrides+=(
-    auxiliary.wm.horizon="${mpc_horizon}"
-    auxiliary.reward_prediction.horizon="${mpc_horizon}"
+    auxiliary.sequence_length="${mpc_sequence_length}"
+    auxiliary.wm.horizon=1
+    auxiliary.reward_prediction.mode=per_step
   )
   mpc_tag=mpc
 else

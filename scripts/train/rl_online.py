@@ -199,6 +199,7 @@ def _bootstrap_discount(terminated: bool) -> float:
 def _replay_history(cfg) -> int:
     horizons = [1]
     if cfg.auxiliary.enabled:
+        horizons.append(int(cfg.auxiliary.sequence_length))
         if cfg.auxiliary.wm.enabled and cfg.auxiliary.wm.target not in {
             'none',
             'null',
@@ -208,9 +209,6 @@ def _replay_history(cfg) -> int:
         if cfg.auxiliary.reward_prediction.enabled:
             horizons.append(int(cfg.auxiliary.reward_prediction.horizon))
     nstep = int(cfg.agent.nstep) if cfg.algorithm.name == 'drqv2' else 1
-    mpc_config = _mpc_config(cfg)
-    if mpc_config.get('enabled', False):
-        horizons.append(int(mpc_config.get('horizon', 5)))
     return max(2, max(horizons) + 1, nstep + 1)
 
 
@@ -232,6 +230,7 @@ def _make_agent(cfg, observation_shape: tuple[int, ...], action_dim: int):
         'reward_prediction_config': reward_prediction_config,
         'curl_config': curl_config,
         'mpc_config': mpc_config,
+        'sequence_length': int(cfg.auxiliary.sequence_length),
         'augmentation_pad': int(cfg.agent.augmentation_pad),
     }
     if cfg.algorithm.name == 'sac':

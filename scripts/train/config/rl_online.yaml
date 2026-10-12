@@ -34,9 +34,12 @@ evaluation_only: false
 
 auxiliary:
   enabled: false
+  # U: replay transitions used for sequence objectives and MPC value loss.
+  sequence_length: 5
   wm: {}
   reward_prediction:
     enabled: false
+    mode: clip_return
     weight: 1.0
     horizon: 1
     hidden_dim: 256

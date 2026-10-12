@@ -13,6 +13,7 @@ from ..augmentation import RandomShiftsAug
 from ..encoders import make_observation_encoder, pixel_batch_to_nchw
 from ..mpc import LatentMPCPlanner, ValuePredictionHead
 from ..representation import (
+    ConsistencyRepresentation,
     InfoNCERepresentation,
     LeWMTemporalRepresentation,
     RewardPredictionRepresentation,
@@ -119,6 +120,7 @@ class SACAgent:
         reward_prediction_config: dict | None = None,
         curl_config: dict | None = None,
         mpc_config: dict | None = None,
+        sequence_length: int = 5,
         augmentation_pad: int = 4,
         # Compatibility parameters for the previous state-only SAC/TACO API.
         taco_enabled: bool | None = None,
@@ -137,6 +139,9 @@ class SACAgent:
         self.device = torch.device(device)
         self.action_dim = int(action_dim)
         self.discount = float(discount)
+        self.sequence_length = int(sequence_length)
+        if self.sequence_length < 1:
+            raise ValueError('auxiliary.sequence_length must be >= 1')
         self.tau = float(tau)
         self.observation_mode = str(observation_mode)
         reward_prediction_config = dict(reward_prediction_config or {})
@@ -188,6 +193,7 @@ class SACAgent:
             discount=self.discount,
             observation_mode=self.observation_mode,
             enabled=bool(auxiliary_enabled),
+            sequence_length=self.sequence_length,
         )
         if self.auxiliary_losses is not None:
             self.auxiliary_losses = self.auxiliary_losses.to(self.device)
@@ -219,22 +225,11 @@ class SACAgent:
             else 0.0
         )
 
-        self.action_encoder = (
-            self.world_model.action_encoder
-            if self.world_model_name in {'infonce', 'taco'}
-            and self.world_model is not None
-            else None
-        )
-        critic_action_dim = (
-            self.world_model.latent_action_dim
-            if self.action_encoder is not None
-            else self.action_dim
-        )
         self.actor = SquashedGaussianActor(
             self.encoder.repr_dim, self.action_dim, hidden_dim
         ).to(self.device)
         self.critic = SACCritic(
-            self.encoder.repr_dim, critic_action_dim, hidden_dim
+            self.encoder.repr_dim, self.action_dim, hidden_dim
         ).to(self.device)
         self.critic_target = copy.deepcopy(self.critic).to(self.device)
         for parameter in self.critic_target.parameters():
@@ -250,10 +245,7 @@ class SACAgent:
             if target_entropy is None
             else float(target_entropy)
         )
-        encoder_parameters = list(self.encoder.parameters())
-        if self.action_encoder is not None:
-            encoder_parameters += list(self.action_encoder.parameters())
-        self.encoder_opt = torch.optim.Adam(encoder_parameters, lr=lr)
+        self.encoder_opt = torch.optim.Adam(self.encoder.parameters(), lr=lr)
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=lr)
         self.alpha_opt = torch.optim.Adam([self.log_alpha], lr=alpha_lr)
@@ -268,12 +260,15 @@ class SACAgent:
         if self.mpc_enabled:
             if not isinstance(
                 self.world_model,
-                (InfoNCERepresentation, LeWMTemporalRepresentation),
+                (
+                    InfoNCERepresentation,
+                    LeWMTemporalRepresentation,
+                    ConsistencyRepresentation,
+                ),
             ):
                 raise ValueError(
-                    'MPC requires an action-conditioned latent WM '
-                    '(currently wm.target=infonce or lewm); wm=none remains '
-                    'model-free'
+                    'MPC requires an action-conditioned one-step WM '
+                    '(wm.target=infonce, lewm, or consistency)'
                 )
             if not isinstance(
                 self.reward_prediction, RewardPredictionRepresentation
@@ -290,24 +285,15 @@ class SACAgent:
                 raise ValueError(
                     'MPC requires auxiliary.wm.weight > 0'
                 )
-            mpc_horizon = int(self.mpc_config.get('horizon', 5))
-            if self.reward_prediction.horizon != mpc_horizon:
+            if self.reward_prediction.mode != 'per_step':
                 raise ValueError(
-                    'MPC horizon must match auxiliary.reward_prediction.horizon'
+                    "MPC requires auxiliary.reward_prediction.mode='per_step'"
                 )
-            if (
-                isinstance(self.world_model, InfoNCERepresentation)
-                and self.world_model.horizon != mpc_horizon
-            ):
+            if self.world_model.horizon != 1:
                 raise ValueError(
-                    'InfoNCE MPC horizon must match auxiliary.wm.horizon'
-                )
-            if (
-                isinstance(self.world_model, LeWMTemporalRepresentation)
-                and self.world_model.horizon < mpc_horizon
-            ):
-                raise ValueError(
-                    'LeWM MPC horizon must not exceed auxiliary.wm.horizon'
+                    'MPC world-model prediction horizon must be 1; set '
+                    'auxiliary.wm.horizon=1 and use auxiliary.sequence_length '
+                    'for replay rollouts'
                 )
             if self.mpc_value_coef > 0:
                 self.mpc_value = ValuePredictionHead(
@@ -384,11 +370,6 @@ class SACAgent:
         batch, time = observations.shape[:2]
         encoded = self.encoder(self._prepare(observations.flatten(0, 1)))
         return encoded.reshape(batch, time, -1)
-
-    def _encode_action(self, action: torch.Tensor) -> torch.Tensor:
-        if self.action_encoder is None:
-            return action
-        return self.action_encoder(action)
 
     def act(
         self,
@@ -471,15 +452,15 @@ class SACAgent:
         """Train the WM-latent value head from SAC's soft TD targets."""
         if self.mpc_value is None:
             return features.new_zeros(())
-        horizon = self.mpc_planner.horizon
-        if features.shape[1] < horizon + 1:
-            raise ValueError('MPC value loss needs horizon + 1 observations')
-        if actions.shape[1] < horizon:
-            raise ValueError('MPC value loss needs one action per WM step')
+        sequence_length = self.sequence_length
+        if features.shape[1] < sequence_length + 1:
+            raise ValueError('MPC value loss needs U + 1 observations')
+        if actions.shape[1] < sequence_length:
+            raise ValueError('MPC value loss needs U replay actions')
 
         total = features.new_zeros(())
         rho = float(self.mpc_config.get('rho', 0.5))
-        for index in range(horizon):
+        for index in range(sequence_length):
             current_latent = self.world_model.encode_mpc_latent(
                 features[:, index]
             )
@@ -502,7 +483,7 @@ class SACAgent:
             total = total + rho**index * self.mpc_value.loss(
                 current_latent, actions[:, index], target
             )
-        return total / horizon
+        return total / sequence_length
 
     def update(
         self,
@@ -530,7 +511,7 @@ class SACAgent:
             next_feature = self.encoder(self._prepare(observations[:, 1]))
             next_action, next_log_prob = self.actor.sample(next_feature)
             target_q1, target_q2 = self.critic_target(
-                next_feature, self._encode_action(next_action)
+                next_feature, next_action
             )
             target_value = torch.minimum(target_q1, target_q2) - (
                 self.alpha.detach() * next_log_prob
@@ -541,7 +522,7 @@ class SACAgent:
                 reward + self.discount * bootstrap_discount * target_value
             )
 
-        q1, q2 = self.critic(state_feature, self._encode_action(actions[:, 0]))
+        q1, q2 = self.critic(state_feature, actions[:, 0])
         critic_loss = F.mse_loss(q1, target_q) + F.mse_loss(q2, target_q)
         self.encoder_opt.zero_grad(set_to_none=True)
         self.critic_opt.zero_grad(set_to_none=True)
@@ -552,14 +533,9 @@ class SACAgent:
         self.critic_opt.zero_grad(set_to_none=True)
         for parameter in self.critic.parameters():
             parameter.requires_grad_(False)
-        if self.action_encoder is not None:
-            for parameter in self.action_encoder.parameters():
-                parameter.requires_grad_(False)
         actor_feature = state_feature.detach()
         policy_action, log_prob = self.actor.sample(actor_feature)
-        actor_q1, actor_q2 = self.critic(
-            actor_feature, self._encode_action(policy_action)
-        )
+        actor_q1, actor_q2 = self.critic(actor_feature, policy_action)
         actor_loss = (
             self.alpha.detach() * log_prob - torch.minimum(actor_q1, actor_q2)
         ).mean()
@@ -568,9 +544,6 @@ class SACAgent:
         self.actor_opt.step()
         for parameter in self.critic.parameters():
             parameter.requires_grad_(True)
-        if self.action_encoder is not None:
-            for parameter in self.action_encoder.parameters():
-                parameter.requires_grad_(True)
 
         alpha_loss = -(
             self.log_alpha * (log_prob.detach() + self.target_entropy)
@@ -617,12 +590,11 @@ class SACAgent:
                 rewards=rewards,
                 discounts=discounts,
                 curl_features=curl_features,
+                sequence_length=self.sequence_length,
             )
             value_loss = self._mpc_value_loss(
                 features,
-                actions[:, : self.mpc_planner.horizon]
-                if self.mpc_enabled
-                else actions,
+                actions[:, : self.sequence_length],
                 rewards,
                 discounts,
             )

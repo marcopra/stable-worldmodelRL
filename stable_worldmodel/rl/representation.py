@@ -69,21 +69,37 @@ class InfoNCERepresentation(nn.Module):
     def predict_mpc_latent(
         self, features: torch.Tensor, actions: torch.Tensor
     ) -> torch.Tensor:
-        """Predict the configured-horizon endpoint using the trained predictor."""
+        """Roll out the one-step predictor over an action sequence."""
         if actions.ndim != 3 or actions.shape[1] != self.horizon:
             raise ValueError(
                 f'InfoNCE MPC needs exactly {self.horizon} planned actions; '
                 f'got shape {tuple(actions.shape)}'
             )
-        source = self.projector(features)
-        encoded_actions = self.encode_action(actions)
-        prediction_input = torch.cat(
-            [source, encoded_actions.flatten(start_dim=1)], dim=-1
+        latent = self.encode_mpc_latent(features)
+        for index in range(self.horizon):
+            latent = self.predict_mpc_step(latent, actions[:, index])
+        return latent
+
+    def predict_mpc_step(
+        self, latent: torch.Tensor, action: torch.Tensor
+    ) -> torch.Tensor:
+        """Apply the composable one-step InfoNCE dynamics model."""
+        if self.horizon != 1:
+            raise ValueError(
+                'InfoNCE MPC dynamics must be trained with horizon=1'
+            )
+        if latent.ndim != 2 or action.ndim != 2:
+            raise ValueError(
+                'MPC latent/action inputs must have shape (B,D)/(B,A)'
+            )
+        action_embedding = self.encode_action(action)
+        prediction = self.predictor(
+            torch.cat((latent, action_embedding), dim=-1)
         )
-        return F.normalize(self.predictor(prediction_input).float(), dim=-1)
+        return F.normalize(prediction.float(), dim=-1)
 
     def encode_action(self, action: torch.Tensor) -> torch.Tensor:
-        """Return the action token also consumed by the TACO RL critic."""
+        """Embed replay actions for the temporal prediction objective."""
         return self.action_encoder(action)
 
     def forward(
@@ -91,6 +107,7 @@ class InfoNCERepresentation(nn.Module):
         features: torch.Tensor,
         actions: torch.Tensor,
         target_features: torch.Tensor,
+        sequence_length: int = 1,
         **_: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         """Return scalar loss and diagnostics.
@@ -123,8 +140,40 @@ class InfoNCERepresentation(nn.Module):
                 'target_features must have the same shape as features'
             )
 
+        available = min(
+            actions.shape[1] - self.horizon + 1,
+            features.shape[1] - self.horizon,
+        )
+        windows = min(int(sequence_length), available)
+        if windows < 1:
+            raise ValueError(
+                f'Expected at least {self.horizon + 1} frames and '
+                f'{self.horizon} actions'
+            )
+        if windows > 1:
+            results = [
+                self.forward(
+                    features[:, offset : offset + self.horizon + 1],
+                    actions[:, offset : offset + self.horizon],
+                    target_features[:, offset : offset + self.horizon + 1],
+                    sequence_length=1,
+                )
+                for offset in range(windows)
+            ]
+            averaged = dict(results[0])
+            for name in (
+                'loss',
+                'infonce_loss',
+                'positive_similarity',
+                'negative_similarity',
+            ):
+                averaged[name] = torch.stack(
+                    [result[name] for result in results]
+                ).mean()
+            return averaged
+
         encoded_actions = self.encode_action(actions[:, : self.horizon])
-        source = self.projector(features[:, 0])
+        source = self.encode_mpc_latent(features[:, 0])
         prediction_input = torch.cat(
             [source, encoded_actions.flatten(start_dim=1)], dim=-1
         )
@@ -221,6 +270,7 @@ class JEPATemporalRepresentation(nn.Module):
         self,
         features: torch.Tensor,
         target_features: torch.Tensor,
+        sequence_length: int = 1,
         **_: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         if features.ndim != 3 or target_features.ndim != 3:
@@ -230,11 +280,22 @@ class JEPATemporalRepresentation(nn.Module):
                 f'Expected at least {self.horizon + 1} frames, '
                 f'got {features.shape[1]}'
             )
-        context = self.projector(features[:, : self.horizon])
-        prediction = self.predictor(context)[:, -1]
-        with torch.no_grad():
-            target = self.projector(target_features[:, self.horizon].detach())
-        loss = F.mse_loss(prediction, target)
+        available = features.shape[1] - self.horizon
+        windows = min(int(sequence_length), available)
+        if windows < 1:
+            raise ValueError('JEPA needs at least one complete temporal window')
+        losses = []
+        for offset in range(windows):
+            context = self.projector(
+                features[:, offset : offset + self.horizon]
+            )
+            prediction = self.predictor(context)[:, -1]
+            with torch.no_grad():
+                target = self.projector(
+                    target_features[:, offset + self.horizon].detach()
+                )
+            losses.append(F.mse_loss(prediction, target))
+        loss = torch.stack(losses).mean()
         return {'loss': loss, 'jepa_loss': loss.detach()}
 
 
@@ -304,28 +365,36 @@ class LeWMTemporalRepresentation(nn.Module):
     def predict_mpc_latent(
         self, features: torch.Tensor, actions: torch.Tensor
     ) -> torch.Tensor:
-        """Autoregressively roll out with LeWM's trained one-step predictor."""
+        """Roll out LeWM's composable one-step predictor."""
         if actions.ndim != 3:
             raise ValueError('planned actions must have shape (B,H,A)')
-        if actions.shape[1] > self.horizon:
-            raise ValueError(
-                f'LeWM MPC horizon must be <= its training horizon '
-                f'({self.horizon}), got {actions.shape[1]}'
-            )
-        latent_history = [self.encode_mpc_latent(features)]
-        action_embeddings = self.action_encoder(actions)
+        if self.horizon != 1:
+            raise ValueError('LeWM MPC dynamics must be trained with horizon=1')
+        latent = self.encode_mpc_latent(features)
         for index in range(actions.shape[1]):
-            state_context = torch.stack(latent_history, dim=1)
-            prediction = self.predictor(
-                state_context, action_embeddings[:, : index + 1]
+            latent = self.predict_mpc_step(latent, actions[:, index])
+        return latent
+
+    def predict_mpc_step(
+        self, latent: torch.Tensor, action: torch.Tensor
+    ) -> torch.Tensor:
+        """Predict one latent transition in LeWM's projected space."""
+        if self.horizon != 1:
+            raise ValueError('LeWM MPC dynamics must be trained with horizon=1')
+        if latent.ndim != 2 or action.ndim != 2:
+            raise ValueError(
+                'MPC latent/action inputs must have shape (B,D)/(B,A)'
             )
-            latent_history.append(self.pred_proj(prediction[:, -1]))
-        return latent_history[-1]
+        state_context = latent.unsqueeze(1)
+        action_embedding = self.action_encoder(action.unsqueeze(1))
+        prediction = self.predictor(state_context, action_embedding)
+        return self.pred_proj(prediction[:, -1])
 
     def forward(
         self,
         features: torch.Tensor,
         actions: torch.Tensor,
+        sequence_length: int = 1,
         **_: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         if features.ndim != 3 or actions.ndim != 3:
@@ -342,19 +411,38 @@ class LeWMTemporalRepresentation(nn.Module):
                 f'Expected at least {self.horizon} actions, got {actions.shape[1]}'
             )
 
-        batch = features.shape[0]
-        projected = self.projector(
-            features[:, : self.horizon + 1].flatten(0, 1)
-        ).reshape(batch, self.horizon + 1, -1)
-        action_embeddings = self.action_encoder(actions[:, : self.horizon])
-        predictions = self.predictor(
-            projected[:, : self.horizon], action_embeddings
+        available = min(
+            actions.shape[1] - self.horizon + 1,
+            features.shape[1] - self.horizon,
         )
-        predictions = self.pred_proj(predictions.flatten(0, 1)).reshape_as(
-            projected[:, 1:]
-        )
-        prediction_loss = F.mse_loss(predictions, projected[:, 1:])
-        sigreg_loss = self.sigreg(projected.transpose(0, 1))
+        windows = min(int(sequence_length), available)
+        if windows < 1:
+            raise ValueError('LeWM needs at least one complete training window')
+        prediction_losses = []
+        sigreg_losses = []
+        for offset in range(windows):
+            batch = features.shape[0]
+            window_features = features[
+                :, offset : offset + self.horizon + 1
+            ]
+            projected = self.projector(
+                window_features.flatten(0, 1)
+            ).reshape(batch, self.horizon + 1, -1)
+            action_embeddings = self.action_encoder(
+                actions[:, offset : offset + self.horizon]
+            )
+            predictions = self.predictor(
+                projected[:, : self.horizon], action_embeddings
+            )
+            predictions = self.pred_proj(
+                predictions.flatten(0, 1)
+            ).reshape_as(projected[:, 1:])
+            prediction_losses.append(
+                F.mse_loss(predictions, projected[:, 1:])
+            )
+            sigreg_losses.append(self.sigreg(projected.transpose(0, 1)))
+        prediction_loss = torch.stack(prediction_losses).mean()
+        sigreg_loss = torch.stack(sigreg_losses).mean()
         loss = prediction_loss + self.sigreg_weight * sigreg_loss
         return {
             'loss': loss,
@@ -363,8 +451,79 @@ class LeWMTemporalRepresentation(nn.Module):
         }
 
 
+class ConsistencyRepresentation(nn.Module):
+    """Action-conditioned one-step dynamics trained by latent consistency."""
+
+    def __init__(
+        self,
+        feature_dim: int,
+        action_dim: int,
+        projection_dim: int = 128,
+        hidden_dim: int = 256,
+        rho: float = 0.5,
+    ) -> None:
+        super().__init__()
+        if not 0 <= rho <= 1:
+            raise ValueError(f'consistency rho must be in [0, 1], got {rho}')
+        self.horizon = 1
+        self.projection_dim = int(projection_dim)
+        self.rho = float(rho)
+        self.projector = nn.Sequential(
+            nn.Linear(feature_dim, projection_dim),
+            nn.LayerNorm(projection_dim),
+        )
+        self.transition = nn.Sequential(
+            nn.Linear(projection_dim + action_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, projection_dim),
+        )
+
+    @property
+    def mpc_latent_dim(self) -> int:
+        return self.projection_dim
+
+    def encode_mpc_latent(self, features: torch.Tensor) -> torch.Tensor:
+        return self.projector(features)
+
+    def predict_mpc_step(
+        self, latent: torch.Tensor, action: torch.Tensor
+    ) -> torch.Tensor:
+        if latent.ndim != 2 or action.ndim != 2:
+            raise ValueError(
+                'MPC latent/action inputs must have shape (B,D)/(B,A)'
+            )
+        return self.transition(torch.cat((latent, action), dim=-1))
+
+    def forward(
+        self,
+        features: torch.Tensor,
+        actions: torch.Tensor,
+        target_features: torch.Tensor,
+        sequence_length: int = 1,
+        **_: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        if features.ndim != 3 or target_features.shape != features.shape:
+            raise ValueError('features and targets must have matching (B,T,D) shapes')
+        if actions.ndim != 3:
+            raise ValueError('actions must have shape (B,T,A)')
+        steps = min(int(sequence_length), actions.shape[1], features.shape[1] - 1)
+        if steps < 1:
+            raise ValueError('consistency loss needs at least one transition')
+
+        latent = self.encode_mpc_latent(features[:, 0])
+        total = features.new_zeros(())
+        for index in range(steps):
+            latent = self.predict_mpc_step(latent, actions[:, index])
+            with torch.no_grad():
+                target = self.projector(target_features[:, index + 1].detach())
+            total = total + self.rho**index * (latent - target).square().sum(-1).mean()
+        loss = total / steps
+        return {'loss': loss, 'consistency_loss': loss.detach()}
+
+
 class RewardPredictionRepresentation(nn.Module):
-    """Predict the discounted reward accumulated over a temporal action clip."""
+    """Predict either a clip return or one reward from a latent/action pair."""
 
     def __init__(
         self,
@@ -373,14 +532,25 @@ class RewardPredictionRepresentation(nn.Module):
         horizon: int,
         hidden_dim: int = 256,
         discount: float = 0.99,
+        mode: str = 'clip_return',
     ) -> None:
         super().__init__()
         if horizon < 1:
             raise ValueError('reward prediction horizon must be >= 1')
         self.horizon = int(horizon)
         self.discount = float(discount)
+        if mode not in {'clip_return', 'per_step'}:
+            raise ValueError(
+                "reward prediction mode must be 'clip_return' or 'per_step'"
+            )
+        self.mode = mode
+        action_input_dim = (
+            horizon * action_dim
+            if mode == 'clip_return'
+            else action_dim
+        )
         self.predictor = nn.Sequential(
-            nn.Linear(feature_dim + horizon * action_dim, hidden_dim),
+            nn.Linear(feature_dim + action_input_dim, hidden_dim),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, 1),
         )
@@ -389,6 +559,8 @@ class RewardPredictionRepresentation(nn.Module):
         self, features: torch.Tensor, actions: torch.Tensor
     ) -> torch.Tensor:
         """Predict the same discounted reward clip optimized by this loss."""
+        if self.mode != 'clip_return':
+            raise ValueError('predict_return is only available in clip_return mode')
         if actions.ndim != 3 or actions.shape[1] != self.horizon:
             raise ValueError(
                 f'Reward prediction MPC needs exactly {self.horizon} planned '
@@ -399,33 +571,87 @@ class RewardPredictionRepresentation(nn.Module):
             torch.cat([features, action_sequence], dim=-1)
         )
 
+    def predict_step(
+        self, latent: torch.Tensor, action: torch.Tensor
+    ) -> torch.Tensor:
+        """Predict immediate reward for a WM latent and its action."""
+        if self.mode != 'per_step':
+            raise ValueError('predict_step is only available in per_step mode')
+        if latent.ndim != 2 or action.ndim != 2:
+            raise ValueError(
+                'per-step reward inputs must have shape (B,Z)/(B,A)'
+            )
+        return self.predictor(torch.cat((latent, action), dim=-1))
+
     def forward(
         self,
         features: torch.Tensor,
         actions: torch.Tensor,
         rewards: torch.Tensor,
         discounts: torch.Tensor,
+        sequence_length: int = 1,
         **_: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
+        if self.mode == 'per_step':
+            if features.ndim != 3 or actions.ndim != 3:
+                raise ValueError(
+                    'per-step reward training expects features/actions with '
+                    'shapes (B,T,Z)/(B,T,A)'
+                )
+            if rewards.ndim == 3:
+                rewards = rewards.squeeze(-1)
+            steps = min(
+                int(sequence_length),
+                features.shape[1] - 1,
+                actions.shape[1],
+                rewards.shape[1],
+            )
+            if steps < 1:
+                raise ValueError('per-step reward training needs a transition')
+            prediction = self.predict_step(
+                features[:, :steps].flatten(0, 1),
+                actions[:, :steps].flatten(0, 1),
+            ).reshape(features.shape[0], steps)
+            loss = F.mse_loss(prediction, rewards[:, :steps])
+            return {'loss': loss, 'reward_prediction_loss': loss.detach()}
+
         if actions.shape[1] < self.horizon or rewards.shape[1] < self.horizon:
             raise ValueError(
                 f'reward prediction needs {self.horizon} transitions'
             )
-        prediction = self.predict_return(
-            features[:, 0], actions[:, : self.horizon]
+        available = min(
+            max(1, int(sequence_length) - self.horizon + 1),
+            features.shape[1] - self.horizon,
+            actions.shape[1] - self.horizon + 1,
+            rewards.shape[1] - self.horizon + 1,
+            discounts.shape[1] - self.horizon + 1,
         )
-        reward = rewards[:, : self.horizon]
-        mask = discounts[:, : self.horizon]
-        if reward.ndim == 3:
-            reward = reward.squeeze(-1)
-        if mask.ndim == 3:
-            mask = mask.squeeze(-1)
-        target = torch.zeros_like(reward[:, :1])
-        scale = torch.ones_like(target)
-        for index in range(self.horizon):
-            target = target + scale * reward[:, index : index + 1]
-            scale = scale * self.discount * mask[:, index : index + 1]
-        loss = F.mse_loss(prediction, target)
+        windows = min(int(sequence_length), available)
+        if windows < 1:
+            raise ValueError(
+                f'reward prediction needs {self.horizon} transitions'
+            )
+        predictions = []
+        targets = []
+        if rewards.ndim == 3:
+            rewards = rewards.squeeze(-1)
+        if discounts.ndim == 3:
+            discounts = discounts.squeeze(-1)
+        for offset in range(windows):
+            prediction = self.predict_return(
+                features[:, offset],
+                actions[:, offset : offset + self.horizon],
+            )
+            reward = rewards[:, offset : offset + self.horizon]
+            mask = discounts[:, offset : offset + self.horizon]
+            target = torch.zeros_like(reward[:, :1])
+            scale = torch.ones_like(target)
+            for index in range(self.horizon):
+                target = target + scale * reward[:, index : index + 1]
+                scale = scale * self.discount * mask[:, index : index + 1]
+            predictions.append(prediction)
+            targets.append(target)
+        loss = F.mse_loss(torch.cat(predictions), torch.cat(targets))
         return {'loss': loss, 'reward_prediction_loss': loss.detach()}
 
 
@@ -474,9 +700,19 @@ _OBJECTIVE_ALIASES = {
     'lewn': 'lewm',
 }
 _SUPPORTED_OBJECTIVES = frozenset(
-    {'infonce', 'lewm', 'jepa', 'pldm', 'reward_prediction', 'curl'}
+    {
+        'infonce',
+        'lewm',
+        'jepa',
+        'pldm',
+        'consistency',
+        'reward_prediction',
+        'curl',
+    }
 )
-_WORLD_MODEL_OBJECTIVES = frozenset({'infonce', 'lewm', 'jepa', 'pldm'})
+_WORLD_MODEL_OBJECTIVES = frozenset(
+    {'infonce', 'lewm', 'jepa', 'pldm', 'consistency'}
+)
 
 
 def _validate_objective_config(
@@ -498,6 +734,12 @@ def _validate_objective_config(
         )
     if name == 'curl' and observation_mode != 'pixels':
         raise ValueError('CURL is available only with pixel observations')
+    if name == 'reward_prediction':
+        mode = str(config.get('mode', 'clip_return'))
+        if mode not in {'clip_return', 'per_step'}:
+            raise ValueError(
+                "reward prediction mode must be 'clip_return' or 'per_step'"
+            )
     if 'horizon' in config and int(config['horizon']) < 1:
         raise ValueError(
             f'World-model horizon must be >= 1, got {config["horizon"]}'
@@ -577,6 +819,14 @@ def build_world_model(
             hidden_dim=int(config.get('lewm_hidden_dim', 2048)),
             sigreg_weight=float(config.get('sigreg_weight', 0.09)),
         )
+    elif name == 'consistency':
+        module = ConsistencyRepresentation(
+            feature_dim,
+            action_dim,
+            projection_dim=projection_dim,
+            hidden_dim=hidden_dim,
+            rho=float(config.get('rho', 0.5)),
+        )
     elif name == 'reward_prediction':
         module = RewardPredictionRepresentation(
             feature_dim,
@@ -607,6 +857,7 @@ class AuxiliaryLosses(nn.Module):
         world_model_weight: float = 0.0,
         reward_prediction_weight: float = 0.0,
         curl_weight: float = 0.0,
+        sequence_length: int = 1,
     ) -> None:
         super().__init__()
         self.world_model = world_model
@@ -615,10 +866,14 @@ class AuxiliaryLosses(nn.Module):
         self.world_model_weight = float(world_model_weight)
         self.reward_prediction_weight = float(reward_prediction_weight)
         self.curl_weight = float(curl_weight)
+        if sequence_length < 1:
+            raise ValueError('auxiliary sequence_length must be >= 1')
+        self.sequence_length = int(sequence_length)
         self.horizon = max(
             1,
             int(getattr(world_model, 'horizon', 1)),
             int(getattr(reward_prediction, 'horizon', 1)),
+            self.sequence_length,
         )
 
     @property
@@ -648,7 +903,22 @@ class AuxiliaryLosses(nn.Module):
         for prefix, objective, weight in objectives:
             if objective is None:
                 continue
-            result = objective(**inputs)
+            objective_inputs = {**inputs, 'sequence_length': self.sequence_length}
+            if (
+                prefix == 'reward_prediction'
+                and objective.mode == 'per_step'
+            ):
+                if self.world_model is None or not hasattr(
+                    self.world_model, 'encode_mpc_latent'
+                ):
+                    raise ValueError(
+                        'Per-step reward prediction requires an MPC-capable '
+                        'world model'
+                    )
+                objective_inputs['features'] = (
+                    self.world_model.encode_mpc_latent(inputs['features'])
+                )
+            result = objective(**objective_inputs)
             loss = result['loss']
             weighted_loss = loss * weight
             total = total + weighted_loss
@@ -675,6 +945,7 @@ def build_auxiliary_losses(
     discount: float = 0.99,
     observation_mode: str = 'state',
     enabled: bool = True,
+    sequence_length: int = 1,
 ) -> AuxiliaryLosses | None:
     """Build one primary loss and the explicitly supported optional add-ons.
 
@@ -721,9 +992,18 @@ def build_auxiliary_losses(
         if world_model_name != 'none'
         else None
     )
+    reward_mode = str(reward_prediction_config.get('mode', 'clip_return'))
+    reward_feature_dim = feature_dim
+    if reward_mode == 'per_step':
+        if world_model is None or not hasattr(world_model, 'mpc_latent_dim'):
+            raise ValueError(
+                'Per-step reward prediction requires an action-conditioned '
+                'world model with an MPC latent space'
+            )
+        reward_feature_dim = int(world_model.mpc_latent_dim)
     reward_prediction = (
         RewardPredictionRepresentation(
-            feature_dim,
+            reward_feature_dim,
             action_dim,
             horizon=int(reward_prediction_config.get('horizon', 1)),
             hidden_dim=int(reward_prediction_config.get('hidden_dim', 256)),
@@ -732,6 +1012,7 @@ def build_auxiliary_losses(
                 if reward_prediction_config.get('discount') is None
                 else float(reward_prediction_config['discount'])
             ),
+            mode=reward_mode,
         )
         if reward_enabled
         else None
@@ -751,6 +1032,7 @@ def build_auxiliary_losses(
         world_model_weight=world_model_weight,
         reward_prediction_weight=reward_weight,
         curl_weight=curl_weight,
+        sequence_length=sequence_length,
     )
 
 

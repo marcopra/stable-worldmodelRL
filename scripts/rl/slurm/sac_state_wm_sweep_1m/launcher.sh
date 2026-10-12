@@ -6,7 +6,7 @@ seeds="11 12 13 14 15"
 mpc_enabled="${MPC_ENABLED:-false}"
 case "${mpc_enabled,,}" in
   1|true|yes|on)
-    wm_losses=(infonce lewm)
+    wm_losses=(infonce lewm consistency)
     mpc_enabled=true
     ;;
   0|false|no|off)

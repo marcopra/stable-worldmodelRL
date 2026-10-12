@@ -5,13 +5,15 @@ Both agents accept state or rendered pixel observations and can run with the
 auxiliary learning path disabled or with one primary world-model loss. Reward
 prediction and CURL are separately configurable add-ons.
 Both also accept optional TD-MPC2-style latent planning through the top-level
-`mpc.enabled` config. MPC requires an action-conditioned InfoNCE or LeWM model
-and the existing reward-prediction add-on; it reuses these predictors rather
-than learning duplicate transition or reward heads. The optional TD-MPC2-style
-value loss is controlled by `mpc.value_coef` (default `0.1`; set to `0` to
-disable it and terminal-value bootstrapping). `wm=none` remains model-free and
-cannot use MPC. Imagined steps do not advance the environment interaction
-counter.
+`mpc.enabled` config. MPC requires an action-conditioned InfoNCE, LeWM, or
+consistency model and the existing per-step reward-prediction add-on; it reuses
+these predictors rather than learning duplicate transition or reward heads.
+The model transition horizon is one, while `auxiliary.sequence_length` sets
+the replay window `U` and `mpc.horizon` independently sets the planning
+horizon `K`. The optional TD-MPC2-style value loss is controlled by
+`mpc.value_coef` (default `0.1`; set to `0` to disable it and terminal-value
+bootstrapping). `wm=none` remains model-free and cannot use MPC. Imagined
+steps do not advance the environment interaction counter.
 The current architecture and extension guide live in
 [`rl_repository_audit.md`](rl_repository_audit.md).
 
@@ -23,8 +25,9 @@ The current architecture and extension guide live in
 - `stable_worldmodel/rl/encoders.py`: shared state and pixel observation
   encoders.
 - `stable_worldmodel/rl/representation.py`: InfoNCE/TACO, LeWM, JEPA, PLDM,
-  reward-prediction, and pixel-only CURL adapters. Each run selects at most one
-  primary loss and may enable reward prediction and/or CURL.
+  consistency, reward-prediction, and pixel-only CURL adapters. Each run
+  selects at most one primary loss and may enable reward prediction and/or
+  CURL.
 - `scripts/train/rl_online.py`: environment collection, replay, evaluation,
   logging, checkpointing, and algorithm dispatch.
 - `scripts/train/config/rl_online.yaml`: shared run defaults composed with the
@@ -68,13 +71,14 @@ PYTHONPATH="$PWD" conda run -n swm-rl python scripts/train/rl_online.py \
 ```
 
 Enable MPC with `mpc.enabled=true`, a supported action-conditioned WM
-(`wm=infonce` or `wm=lewm`), and
-`auxiliary.reward_prediction.enabled=true`. Set the reward-prediction horizon
-to equal `mpc.horizon`; for InfoNCE match `auxiliary.wm.horizon`, and for LeWM
-set it at least as large as `mpc.horizon`. Defaults are in
-`scripts/train/config/rl_online.yaml`. Set `mpc.start_steps` to delay
-planning while replay trains the predictors. The planner warm start resets at
-episode boundaries, and the optional value head is included in checkpoints.
+(`wm=infonce`, `wm=lewm`, or `wm=consistency`), and
+`auxiliary.reward_prediction.enabled=true` with
+`auxiliary.reward_prediction.mode=per_step`. Keep `auxiliary.wm.horizon=1`;
+`auxiliary.sequence_length` is replay window `U`, and `mpc.horizon` is planning
+horizon `K`. Defaults are in `scripts/train/config/rl_online.yaml`. Set
+`mpc.start_steps` to delay planning while replay trains the predictors. The
+planner warm start resets at episode boundaries, and the optional value head
+is included in checkpoints.
 
 The 1M-step state SAC sweep for Finger Turn Hard, Acrobot Swingup, and Reacher
 Hard is launched with

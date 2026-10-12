@@ -23,14 +23,18 @@ run_name="${run_id}-${ENV_KEY}-${WM_LOSS}-seed-${SEED}"
 run_group="${run_id}-${ENV_KEY}"
 checkpoint_dir="./runs/rl/${run_id}/${ENV_KEY}/${WM_LOSS}/seed_${SEED}"
 
+mpc_horizon="${MPC_HORIZON:-5}"
+mpc_sequence_length="${MPC_SEQUENCE_LENGTH:-${mpc_horizon}}"
+
 auxiliary_overrides=(
   auxiliary.enabled=true
+  auxiliary.sequence_length="${mpc_sequence_length}"
   auxiliary.wm.enabled=true
   auxiliary.wm.weight=1.0
-  auxiliary.wm.horizon=5
+  auxiliary.wm.horizon=1
   auxiliary.reward_prediction.enabled=true
+  auxiliary.reward_prediction.mode=per_step
   auxiliary.reward_prediction.weight=1.0
-  auxiliary.reward_prediction.horizon=5
   auxiliary.curl.enabled=false
 )
 case "${WM_LOSS}" in
@@ -46,6 +50,13 @@ case "${WM_LOSS}" in
       auxiliary.wm.projection_dim=192
       auxiliary.wm.lewm_hidden_dim=2048
       auxiliary.wm.sigreg_weight=0.09
+    )
+    ;;
+  consistency)
+    auxiliary_overrides+=(
+      auxiliary.wm.projection_dim=128
+      auxiliary.wm.hidden_dim=256
+      auxiliary.wm.rho=0.5
     )
     ;;
   *)
@@ -72,7 +83,7 @@ python scripts/train/rl_online.py \
   wm="${WM_LOSS}" \
   mpc.enabled=true \
   mpc.start_steps=10000 \
-  mpc.horizon=5 \
+  mpc.horizon="${mpc_horizon}" \
   mpc.value_coef=0.1 \
   mpc.num_samples=512 \
   mpc.num_elites=64 \

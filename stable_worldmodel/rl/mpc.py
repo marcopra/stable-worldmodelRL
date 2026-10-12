@@ -9,6 +9,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from .representation import (
+    ConsistencyRepresentation,
     InfoNCERepresentation,
     LeWMTemporalRepresentation,
     RewardPredictionRepresentation,
@@ -159,7 +160,11 @@ class LatentMPCPlanner:
     def plan(
         self,
         feature: torch.Tensor,
-        world_model: InfoNCERepresentation | LeWMTemporalRepresentation,
+        world_model: (
+            InfoNCERepresentation
+            | LeWMTemporalRepresentation
+            | ConsistencyRepresentation
+        ),
         reward_model: RewardPredictionRepresentation,
         policy_action: PolicyAction,
         value: ValuePredictionHead | None,
@@ -210,12 +215,23 @@ class LatentMPCPlanner:
             world_model.eval()
             reward_model.eval()
             try:
-                predicted_latent = world_model.predict_mpc_latent(
-                    initial_feature, candidates[:, : self.horizon]
+                predicted_latent = world_model.encode_mpc_latent(
+                    initial_feature
                 )
-                predicted_return = reward_model.predict_return(
-                    initial_feature, candidates[:, : self.horizon]
+                predicted_return = feature.new_zeros(
+                    self.num_samples, 1
                 )
+                for index in range(self.horizon):
+                    action = candidates[:, index]
+                    predicted_reward = reward_model.predict_step(
+                        predicted_latent, action
+                    )
+                    predicted_return = (
+                        predicted_return + discount**index * predicted_reward
+                    )
+                    predicted_latent = world_model.predict_mpc_step(
+                        predicted_latent, action
+                    )
             finally:
                 world_model.train(world_model_training)
                 reward_model.train(reward_model_training)

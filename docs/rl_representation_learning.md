@@ -59,11 +59,14 @@ The registered choices are:
 
 - **`infonce` / TACO:** predict a future encoded observation from the current
   feature and intervening actions, using the other batch entries as negatives.
-  The learned action encoder is shared with the RL critic. InfoNCE needs at
-  least two samples in a batch.
+  The action encoder belongs to the temporal prediction objective. InfoNCE
+  needs at least two samples in a batch.
 - **`lewm`, `jepa`, and `pldm`:** feature-level adapters that reuse compatible
   components from the existing Stable World Model objectives. They are not the
   standalone LeWM or PreJEPA image-model training pipelines.
+- **`consistency`:** action-conditioned one-step latent dynamics trained over
+  replay windows with a geometrically weighted consistency loss. It also
+  exposes the composable transition needed by MPC.
 - **Reward prediction add-on:** predict the discounted reward accumulated over
   its configured action horizon. It can be enabled alongside the selected
   primary objective.
@@ -71,8 +74,8 @@ The registered choices are:
   pixel observation. It can be enabled alongside the selected primary
   objective; state+CURL configs fail validation.
 
-Choose only one of `infonce`, `lewm`, `jepa`, or `pldm` as the primary `wm`
-loss. Reward prediction and CURL may each be enabled or disabled independently;
+Choose only one of `infonce`, `lewm`, `jepa`, `pldm`, or `consistency` as the
+primary `wm` loss. Reward prediction and CURL may each be enabled or disabled independently;
 both can be enabled together when the observation mode is pixels. The TACO
 paper describes InfoNCE as its central objective with reward prediction and
 CURL as additional terms. [TACO
@@ -93,25 +96,26 @@ The selected Hydra `wm` config is packaged as `auxiliary.wm`; it sets
 `target`, `enabled`, and the primary loss parameters. The primary loss is
 scaled by `auxiliary.wm.weight`. Reward prediction and CURL use their own
 configured weights; the selected terms contribute to one auxiliary update over
-the shared encoder. Replay history covers the longest selected temporal
-horizon and clips stay within committed episode segments. The runner sets
-bootstrap discount to zero only for true terminations, preserving bootstrap
-across time limits.
+the shared encoder. Replay history covers the maximum configured WM horizon,
+reward horizon, and `auxiliary.sequence_length`; clips stay within committed
+episode segments. The runner sets bootstrap discount to zero only for true
+terminations, preserving bootstrap across time limits.
 
 ## Optional latent MPC
 
-SAC and DrQ-v2 can use weighted-elite MPC over the selected action-conditioned
-WM. The planner reuses the InfoNCE or LeWM latent predictor and the existing
-discounted reward-prediction head; it does not instantiate a second dynamics
-or reward model. Therefore `wm=none` remains pure model-free SAC/DrQ-v2 and
-cannot be combined with MPC. The current online planner supports InfoNCE and
-LeWM, which expose action-conditioned latent rollouts.
+SAC and DrQ-v2 can use weighted-elite MPC over an action-conditioned WM. The
+planner repeatedly applies its one-step latent transition and accumulates
+predicted per-step rewards; it does not instantiate a second dynamics or
+reward model. Therefore `wm=none` remains pure model-free SAC/DrQ-v2 and cannot
+be combined with MPC. The online planner supports InfoNCE, LeWM, and
+consistency models, each configured with `auxiliary.wm.horizon=1` so its
+transition is composable.
 
-Enable it with `mpc.enabled=true`, select `wm=infonce` or `wm=lewm`, and enable
-`auxiliary.reward_prediction`. The reward-prediction horizon must equal
-`mpc.horizon`; for InfoNCE, `auxiliary.wm.horizon` must also equal it. LeWM is
-rolled out autoregressively using its trained predictor and requires
-`auxiliary.wm.horizon >= mpc.horizon`. `mpc.value_coef`
+Enable it with `mpc.enabled=true`, select `wm=infonce`, `wm=lewm`, or
+`wm=consistency`, and enable `auxiliary.reward_prediction` with
+`auxiliary.reward_prediction.mode=per_step`. `auxiliary.sequence_length` sets
+the replay window size `U`; `mpc.horizon` sets the imagined planning horizon
+`K`. These settings are independent. `mpc.value_coef`
 weights the TD-MPC2-style two-hot value-prediction loss (default `0.1`); set it
 to `0` to disable value learning and terminal-value bootstrapping. The value
 head is a twin categorical Q estimator trained with TD-MPC2-style bootstrapped

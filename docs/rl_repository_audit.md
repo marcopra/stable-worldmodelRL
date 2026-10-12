@@ -51,32 +51,36 @@ training scripts remain separate from these online RL adapters.
 | LeWM adapter | Yes | Yes |
 | JEPA adapter | Yes | Yes |
 | PLDM adapter | Yes | Yes |
+| Action-conditioned consistency adapter | Yes | Yes |
 | Reward prediction add-on | Yes | Yes; independently selectable |
 | CURL add-on | Rejected during setup | Yes; independently selectable |
 
-Each run selects at most one primary loss from InfoNCE, LeWM, JEPA, or PLDM.
+Each run selects at most one primary loss from InfoNCE, LeWM, JEPA, PLDM, or
+consistency.
 Reward prediction and CURL are explicit optional add-ons; either or both may be
 enabled with the selected primary loss. CURL requires pixels.
 
 Latent MPC is an optional action-selection path for SAC and DrQ-v2
-(`mpc.enabled=true`) when InfoNCE or LeWM and the existing reward-prediction
-add-on are enabled. It reuses their trained latent and reward predictors and
-performs policy-seeded weighted-elite planning. The optional two-hot value
-prediction loss trains a twin categorical Q estimator with slowly updated
-target Q heads; its weight defaults to `0.1` and zero disables value learning
-and terminal bootstrap. The SAC/DrQ-v2 critics keep their original updates.
-`wm=none` is model-free and cannot use MPC. Planning runs inside agent action
-selection and does not add imagined steps to the environment-step count.
+(`mpc.enabled=true`) when InfoNCE, LeWM, or consistency and the per-step
+reward-prediction add-on are enabled. Its one-step transition horizon,
+replay-sequence length `U`, and planning horizon `K` are configured
+independently. It reuses the trained latent and reward predictors and performs
+policy-seeded weighted-elite planning. The optional two-hot value prediction
+loss trains a twin categorical Q estimator with slowly updated target Q heads;
+its weight defaults to `0.1` and zero disables value learning and terminal
+bootstrap. The SAC/DrQ-v2 critics keep their original updates. `wm=none` is
+model-free and cannot use MPC. Planning runs inside agent action selection and
+does not add imagined steps to the environment-step count.
 
 State mode accepts a numeric Box observation, or a numeric Box field selected
 with `observation.state_key` from a Dict observation. Pixel mode renders RGB
 frames, resizes them, and optionally stacks them. The action space must be a
 continuous Box normalized to `[-1, 1]`.
 
-LeWM, JEPA, and PLDM are feature-level adapters over the selected RL encoder.
-They reuse compatible predictors or losses from this library; they are not
-the standalone LeWM, PreJEPA/JEPA, or PLDM training stacks. SPR, ATC, and DRIML
-do not yet have online RL adapters.
+LeWM, JEPA, PLDM, and consistency are feature-level adapters over the selected
+RL encoder. They reuse compatible predictors or losses from this library; they
+are not the standalone LeWM, PreJEPA/JEPA, or PLDM training stacks. SPR, ATC,
+and DRIML do not yet have online RL adapters.
 
 ## Configuration model
 
@@ -96,8 +100,10 @@ selects at most one primary `wm` config. For example, `wm=infonce` selects
 temporal InfoNCE, while `wm=lewm` selects LeWM. That config is packaged under
 `auxiliary.wm`, where `target` names the objective and `enabled`, its
 parameters, and scalar weight control it. Override those settings using paths
-such as `auxiliary.wm.horizon=3`. `auxiliary.reward_prediction` and
-`auxiliary.curl` are the two explicit add-on switches, with their own
+such as `auxiliary.wm.horizon=3`. For MPC, set this model horizon to one and
+use `auxiliary.sequence_length` for replay window `U`.
+`auxiliary.reward_prediction` and `auxiliary.curl` are the two explicit add-on
+switches, with their own
 parameters and weights. Do not configure multiple primary world-model losses
 or add a generic keyed objective collection. Compare primary losses in
 separate experiments; toggle either or both supported add-ons per experiment.
@@ -129,9 +135,9 @@ logs, W&B config, and checkpoints. Selected objectives are constructed only
 when `auxiliary.enabled=true`; disabled runs do not allocate or update
 auxiliary modules. CURL is valid only with pixel observations and fails clearly
 at setup for state runs, even if the global auxiliary switch is off. Replay
-history covers the maximum selected primary/reward-prediction horizon and the
-DrQ-v2 n-step target. True terminations disable bootstrap; time-limit
-truncations retain it.
+history covers the maximum configured WM/reward horizon, auxiliary sequence
+length, and DrQ-v2 n-step target. True terminations disable bootstrap;
+time-limit truncations retain it.
 
 ## Adding an algorithm
 

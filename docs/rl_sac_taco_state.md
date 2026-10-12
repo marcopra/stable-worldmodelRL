@@ -20,17 +20,17 @@ paper](https://papers.neurips.cc/paper_files/paper/2023/file/96d00450ed65531ffe2
 For a replay clip `(s_t, a_t, ..., a_{t+K-1}, s_{t+K})`, temporal InfoNCE
 encodes the start and future observations, represents each action, predicts
 the future feature, and classifies the matching batch entry against in-batch
-negatives. The action encoder is shared with the RL critic. The positive
-future feature is stop-gradient. Optional reward prediction regresses the
+negatives. The action encoder belongs to the auxiliary temporal objective.
+The positive future feature is stop-gradient. Optional reward prediction regresses the
 discounted reward over its configured horizon. Pixel runs can also enable CURL
 to contrast independently augmented views.
 
-The critic update trains the observation encoder, critic, and—when InfoNCE is
-enabled—the shared action encoder. The actor uses detached observation
-features; critic and action-encoder weights are frozen while gradients pass
+The critic update trains the observation encoder and critic. The actor uses
+detached observation features; critic weights are frozen while gradients pass
 through the action value to the policy. The entropy objective updates SAC's
 temperature. The auxiliary update trains the shared encoder and every selected
-loss head. It does not use a separate EMA target encoder.
+loss head, including the InfoNCE action encoder. It does not use a separate
+EMA target encoder.
 
 State observations do not support CURL. Enabling CURL in state mode fails
 during setup with a configuration error. The shared runner bootstraps across

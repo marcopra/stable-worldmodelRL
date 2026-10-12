@@ -3,7 +3,7 @@
 set -euo pipefail
 
 seeds=(11 12 13 14 15)
-wm_losses=(infonce lewm)
+wm_losses=(infonce lewm consistency)
 env_keys=(finger_turn_hard acrobot_swingup reacher_hard)
 env_configs=(
   sac_taco_state

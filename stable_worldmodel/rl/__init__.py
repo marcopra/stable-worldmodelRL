@@ -6,6 +6,7 @@ from .augmentation import RandomShiftsAug
 from .representation import (
     AuxiliaryLosses,
     CURLRepresentation,
+    ConsistencyRepresentation,
     InfoNCERepresentation,
     JEPATemporalRepresentation,
     LeWMTemporalRepresentation,
@@ -19,6 +20,7 @@ from .representation import (
 __all__ = [
     'AuxiliaryLosses',
     'CURLRepresentation',
+    'ConsistencyRepresentation',
     'DrQV2Agent',
     'InfoNCERepresentation',
     'JEPATemporalRepresentation',
