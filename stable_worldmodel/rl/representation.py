@@ -818,6 +818,7 @@ def build_world_model(
             projection_dim=projection_dim,
             hidden_dim=int(config.get('lewm_hidden_dim', 2048)),
             sigreg_weight=float(config.get('sigreg_weight', 0.09)),
+            sigreg_num_proj=int(config.get('sigreg_num_proj', 1024)),
         )
     elif name == 'consistency':
         module = ConsistencyRepresentation(

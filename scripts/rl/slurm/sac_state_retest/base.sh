@@ -52,7 +52,7 @@ case "${mode}" in
       auxiliary.reward_prediction.mode=clip_return
       auxiliary.curl.enabled=false
       mpc.enabled=false
-      num_steps="${TACO_NUM_STEPS:-500000}"
+      num_steps="${TACO_NUM_STEPS:-1000000}"
       batch_size="${TACO_BATCH_SIZE:-1024}"
       learning_starts=5000
       checkpoint_frequency=50000
@@ -111,7 +111,8 @@ case "${mode}" in
       lewm)
         auxiliary_overrides+=(
           auxiliary.wm.projection_dim=192
-          auxiliary.wm.lewm_hidden_dim=2048
+          auxiliary.wm.lewm_hidden_dim="${MPC_LEWM_HIDDEN_DIM:-2048}"
+          auxiliary.wm.sigreg_num_proj="${MPC_LEWM_SIGREG_NUM_PROJ:-1024}"
           auxiliary.wm.sigreg_weight=0.09
         )
         ;;
@@ -131,6 +132,10 @@ case "${mode}" in
     exit 2
     ;;
 esac
+
+if [[ "${mode}" == mpc && -n "${MPC_RUN_SUFFIX:-}" ]]; then
+  run_id="${run_id}-${MPC_RUN_SUFFIX}"
+fi
 
 common_overrides+=(
   checkpoint_dir="./runs/rl/${run_id}/${env_key}/${wm_loss}/seed_${seed}"

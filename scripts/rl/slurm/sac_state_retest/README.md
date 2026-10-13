@@ -9,7 +9,7 @@ bash scripts/rl/slurm/sac_state_retest/launcher_mpc.sh
 
 The TACO launcher submits 15 non-MPC InfoNCE runs: five seeds (11–15) on
 Finger Turn Hard, Acrobot Swingup, and Reacher Hard. It uses each existing
-`sac_taco_state` task preset, including its 500K-step, batch-1024 settings,
+`sac_taco_state` task preset with a 1M-step budget and batch size 1024,
 three-step InfoNCE objective and one-step clip-return reward prediction. It
 sets `auxiliary.sequence_length=3` by default, so InfoNCE uses one
 three-transition window, matching the previous temporal clip sampling. The
@@ -37,5 +37,24 @@ TACO_SEQUENCE_LENGTH=5 \
 
 The MPC launcher also accepts `MPC_START_STEPS`, `MPC_VALUE_COEF`,
 `MPC_NUM_SAMPLES`, `MPC_NUM_ELITES`, `MPC_ITERATIONS`, and
-`MPC_NUM_PI_TRAJS`. `WANDB_ENABLE`, `WANDB_ENTITY`, and `WANDB_PROJECT` control
-W&B logging; logging is enabled by default to match the existing Slurm runs.
+`MPC_NUM_PI_TRAJS`. LeWM additionally accepts `MPC_LEWM_HIDDEN_DIM` and
+`MPC_LEWM_SIGREG_NUM_PROJ`, which default to 2048 and 1024. Add
+`MPC_RUN_SUFFIX` when changing settings so the run group and checkpoints remain
+separate from the full-size results.
+
+For a faster screening run, for example:
+
+```bash
+MPC_RUN_SUFFIX=screen \
+MPC_NUM_SAMPLES=128 MPC_ITERATIONS=3 MPC_HORIZON=3 MPC_NUM_PI_TRAJS=8 \
+MPC_LEWM_HIDDEN_DIM=512 MPC_LEWM_SIGREG_NUM_PROJ=256 \
+  bash scripts/rl/slurm/sac_state_retest/launcher_mpc.sh
+```
+
+This cuts planned latent transitions per action from 15,360 (`512 x 6 x 5`)
+to 1,152 (`128 x 3 x 3`), before accounting for fixed training and evaluation
+costs. The smaller LeWM and SIGReg settings also reduce learner-update cost,
+but change model capacity and regularization, so use the full-size defaults for
+final comparable results. `WANDB_ENABLE`, `WANDB_ENTITY`, and `WANDB_PROJECT`
+control W&B logging; logging is enabled by default to match the existing Slurm
+runs.

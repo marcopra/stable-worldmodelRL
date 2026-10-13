@@ -10,3 +10,4 @@ horizon: 1
 projection_dim: 192
 lewm_hidden_dim: 2048
 sigreg_weight: 0.09
+sigreg_num_proj: 1024
