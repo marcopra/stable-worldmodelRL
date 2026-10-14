@@ -20,7 +20,7 @@ from stable_worldmodel.rl import DrQV2Agent, SACAgent
 from stable_worldmodel.rl.representation import build_world_model
 
 
-def _batch(mode: str, batch_size: int = 4, time: int = 3):
+def _batch(mode: str, batch_size: int = 4, time: int = 6):
     if mode == 'pixels':
         observation = torch.randint(
             0, 256, (batch_size, time, 36, 36, 3), dtype=torch.uint8
@@ -162,7 +162,7 @@ def test_standalone_objectives_update_in_supported_modalities(mode, objective):
         augmentation_pad=2,
     )
 
-    metrics = agent.update(_batch(mode, time=2), step=1)
+    metrics = agent.update(_batch(mode), step=1)
 
     metric = f'{objective}/loss'
     assert torch.isfinite(torch.tensor(metrics[metric]))
@@ -283,6 +283,7 @@ def test_state_curl_configuration_is_rejected_during_agent_setup():
             },
             'auxiliary': {
                 'enabled': True,
+                'sequence_length': 5,
                 'wm': {
                     'target': 'infonce',
                     'enabled': True,

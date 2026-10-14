@@ -22,11 +22,11 @@ def test_agent_initializes_and_updates_on_cpu(representation):
     )
     batch = {
         'pixels': torch.randint(
-            0, 256, (4, horizon + 1, 36, 36, 3), dtype=torch.uint8
+            0, 256, (4, max(5, horizon) + 1, 36, 36, 3), dtype=torch.uint8
         ),
-        'action': torch.rand(4, horizon + 1, 2) * 2 - 1,
-        'reward': torch.randn(4, horizon + 1),
-        'discount': torch.ones(4, horizon + 1),
+        'action': torch.rand(4, max(5, horizon) + 1, 2) * 2 - 1,
+        'reward': torch.randn(4, max(5, horizon) + 1),
+        'discount': torch.ones(4, max(5, horizon) + 1),
     }
 
     metrics = agent.update(batch, step=1)

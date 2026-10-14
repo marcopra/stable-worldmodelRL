@@ -25,6 +25,14 @@ per-step reward prediction, replay sequence length `U=5`, and planner horizon
 256. The TACO and MPC families use separate versioned W&B groups and checkpoint
 directories so they do not overwrite prior runs.
 
+The corrected MPC family is `sac-state-mpc-loss-retest-reward-td-v3`: its
+separate terminal head learns reward-only TD targets while SAC retains its
+soft critic. Old MPC checkpoints lack the new model-update/objective metadata
+and are rejected. The recipe uses open-loop base-policy proposals, not a
+TD-MPC2 latent policy. Match the TACO/MPC batch size, replay, update frequency,
+evaluation schedule, and predictors before interpreting a difference as a
+planning benefit; the default batches 1024/256 are different.
+
 Useful overrides can be exported before launching:
 
 ```bash

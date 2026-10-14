@@ -1,99 +1,91 @@
-# Online RL implementation handoff
+# Online RL SWE handoff
 
-Online SAC and DrQ-v2 share the same collection runner and replay contract.
-Both agents accept state or rendered pixel observations and can run with the
-auxiliary learning path disabled or with one primary world-model loss. Reward
-prediction and CURL are separately configurable add-ons.
-Both also accept optional TD-MPC2-style latent planning through the top-level
-`mpc.enabled` config. MPC requires an action-conditioned InfoNCE, LeWM, or
-consistency model and the existing per-step reward-prediction add-on; it reuses
-these predictors rather than learning duplicate transition or reward heads.
-The model transition horizon is one, while `auxiliary.sequence_length` sets
-the replay window `U` and `mpc.horizon` independently sets the planning
-horizon `K`. The optional TD-MPC2-style value loss is controlled by
-`mpc.value_coef` (default `0.1`; set to `0` to disable it and terminal-value
-bootstrapping). `wm=none` remains model-free and cannot use MPC. Imagined
-steps do not advance the environment interaction counter.
-The current architecture and extension guide live in
-[`rl_repository_audit.md`](rl_repository_audit.md).
+Updated 2026-10-14. Read the [usage guide](rl_representation_learning.md) for
+supported configurations and the [audit](rl_repository_audit.md) for findings,
+loss math, research questions, citations, and preserved experiment evidence.
 
-## Main components
+## Architecture and key files
 
-- `stable_worldmodel/rl/algorithms/base.py`: the `OnlineAgent` protocol.
-- `stable_worldmodel/rl/algorithms/sac.py` and `drqv2.py`: algorithm-owned
-  actor, critic, optimizer, update, and checkpoint logic.
-- `stable_worldmodel/rl/encoders.py`: shared state and pixel observation
-  encoders.
-- `stable_worldmodel/rl/representation.py`: InfoNCE/TACO, LeWM, JEPA, PLDM,
-  consistency, reward-prediction, and pixel-only CURL adapters. Each run
-  selects at most one primary loss and may enable reward prediction and/or
-  CURL.
-- `scripts/train/rl_online.py`: environment collection, replay, evaluation,
-  logging, checkpointing, and algorithm dispatch.
-- `scripts/train/config/rl_online.yaml`: shared run defaults composed with the
-  `agent/` and `wm/` config groups; task YAML files inherit and override them.
+- `rl/algorithms/{sac,drqv2}.py`: original base actor/critic objectives and
+  optimizer ownership, plus auxiliary updates and action selection.
+- `rl/representation.py`: one primary loss, optional reward/CURL; shared encoder
+  gradients. Eligible MPC predictors: one-step InfoNCE, LeWM, consistency.
+- `rl/mpc.py`: weighted-elite planner and optional separate latent two-hot Q.
+  Reuses the selected WM and per-step reward head; no duplicate dynamics.
+- `scripts/train/rl_online.py`: real collection, segment-bounded replay,
+  evaluation, checkpoint/RNG state, and SAC/DrQ dispatch.
+- `scripts/train/config/{rl_online.yaml,agent/,wm/}`: Hydra composition;
+  the `wm` group is packaged as `auxiliary.wm`.
+- `tests/rl/test_mpc.py`: model reuse, checkpoint semantics, gradient/TD targets,
+  numeric rejection, terminal scoring, and real-interaction regression checks.
+- `Model-free-to-Model-based/main.tex`: corrected manuscript in its own checkout.
 
-LeWM, JEPA, and PLDM are feature-level objective adapters over the selected RL
-encoder. They do not load their respective standalone training stacks. State
-mode selects a numeric Box observation or an explicit numeric Box field from a
-Dict observation. Pixel mode renders RGB, resizes frames, and can stack them.
-The replay stores aligned `observation`, `action`, `reward`, and `discount`
-sequences. Time-limit truncations retain a bootstrap discount; true
-terminations do not.
+Paths beginning `rl/` are under `stable_worldmodel/`. Both algorithms support
+state and pixels. `wm=none auxiliary.enabled=false` is the pure baseline.
+MPC requires positive-weight eligible WM, `auxiliary.wm.horizon=1`, and
+positive-weight reward prediction in `per_step` mode with horizon 1. Replay
+span `auxiliary.sequence_length=U` and planner `mpc.horizon=K` are independent.
+State+CURL, none/JEPA/PLDM with MPC, clip-return MPC rewards, untrained MPC,
+and invalid numeric settings fail loudly.
 
-## Running and configuring
+## Commands
 
-The primary entry point accepts any composed RL config:
+Activate `swm-rl`, then run from the repository root:
 
 ```bash
-PYTHONPATH="$PWD" conda run -n swm-rl python scripts/train/rl_online.py \
-  --config-name=sac_state auxiliary.enabled=false
-
-PYTHONPATH="$PWD" conda run -n swm-rl python scripts/train/rl_online.py \
-  --config-name=drqv2_reacher_hard_taco
+PYTHONPATH="$PWD" python scripts/train/rl_online.py --config-name=sac_state wm=none auxiliary.enabled=false
+PYTHONPATH="$PWD" python scripts/train/rl_online.py --config-name=sac_taco_state
+PYTHONPATH="$PWD" python scripts/train/rl_online.py --config-name=rl_online agent=drqv2 observation.mode=state wm=infonce auxiliary.enabled=true auxiliary.wm.horizon=1 auxiliary.sequence_length=5 auxiliary.reward_prediction.enabled=true auxiliary.reward_prediction.mode=per_step auxiliary.reward_prediction.horizon=1 mpc.enabled=true mpc.start_steps=10000 mpc.horizon=5
 ```
 
-Every run config sets `algorithm.name` and `observation.mode`. Auxiliary
-learning defaults off. Select one primary `wm` config and turn on
-`auxiliary.enabled`. The primary config carries its weight and loss-specific
-settings. Toggle optional reward prediction and CURL with
-`auxiliary.reward_prediction.enabled` and `auxiliary.curl.enabled`. For
-example:
+The [benchmark record](rl_reacher_hard_benchmark.md) has historical pilot
+commands/settings and corrected visible-target recipes. Slurm recipes live in
+`scripts/rl/slurm/sac_state_retest/README.md`; the default TACO/MPC batches
+1024/256 are not a matched ablation. Do not launch sweeps as verification.
 
-```bash
-PYTHONPATH="$PWD" conda run -n swm-rl python scripts/train/rl_online.py \
-  --config-name=sac_state \
-  wm=infonce \
-  auxiliary.enabled=true \
-  auxiliary.wm.horizon=3 \
-  auxiliary.reward_prediction.enabled=true \
-  auxiliary.curl.enabled=true
-```
+## Acceptance criteria
 
-Enable MPC with `mpc.enabled=true`, a supported action-conditioned WM
-(`wm=infonce`, `wm=lewm`, or `wm=consistency`), and
-`auxiliary.reward_prediction.enabled=true` with
-`auxiliary.reward_prediction.mode=per_step`. Keep `auxiliary.wm.horizon=1`;
-`auxiliary.sequence_length` is replay window `U`, and `mpc.horizon` is planning
-horizon `K`. Defaults are in `scripts/train/config/rl_online.yaml`. Set
-`mpc.start_steps` to delay planning while replay trains the predictors. The
-planner warm start resets at episode boundaries, and the optional value head
-is included in checkpoints.
+- Disabled auxiliaries allocate no auxiliary modules; MPC rejects missing,
+  disabled, zero-weight, or non-composable dynamics/reward predictors.
+- DrQ forwards configured U; short batches fail before any learner update.
+- With MPC enabled, the SAC/DrQ actor and base critic consume the WM latent.
+  A positive `mpc.value_coef` adds a reward-only MPC Q head; at zero, planning
+  bootstraps from the base critic. SAC's zero-weight planner includes entropy.
+  Value targets and target heads have no gradients.
+- Planning reuses the same WM/reward objects, rolls K times, executes only the
+  first action, and leaves interaction/replay counters unchanged.
+- Model-update count gates planning and survives restore; reset clears warm starts.
+- Both algorithms/modalities and all three eligible WMs work with value on/off.
+- Preserve resolved configs, source revisions, seeds, budgets, logs and checkpoints.
 
-The 1M-step state SAC sweep for Finger Turn Hard, Acrobot Swingup, and Reacher
-Hard is launched with
-`bash scripts/rl/slurm/sac_state_mpc_sweep_1m/launcher.sh`.
+## Known issues and next research work
 
-CURL requires pixel observations and setup rejects it for state runs. The
-legacy `drqv2_online.py` and `sac_taco_online.py` entry points remain thin
-compatibility launchers. Package imports such as
-`stable_worldmodel.rl.drqv2.DrQV2Agent` and
-`stable_worldmodel.rl.sac_taco.SACTACOAgent` remain available.
+MPC's default value coefficient 0.1 is unvalidated. With MPC enabled, the
+actor and base critic consume projected latents. A positive value coefficient
+adds a separate reward-return head; a zero coefficient bootstraps from the
+original SAC/DrQ critic on those latents. Policy proposals remain open-loop at
+the current latent, and value training uses real replay states. There is no
+termination model. Test compounding model
+error, InfoNCE coordinate ambiguity, latent collapse, and value error at imagined
+states before claiming MPC improvement. Run matched actor/MPC and value-off/on
+ablations, then compare K/U and eligible losses with paired seeds.
 
-## Validation
+Old MPC checkpoints without model-update count/objective metadata are rejected;
+earlier SAC soft terminal heads must be retrained. Corrected MPC recipes use
+new reward-TD output families; visual Reacher now explicitly shows the target
+and writes new directories. Historical hidden-target scores are kept separately.
+No corrected MPC advantage or exact source-paper reproduction is established.
 
-`tests/rl` exercises SAC and DrQ-v2 updates for both modalities, baseline and
-primary-plus-add-on updates, Dict-state extraction, objective weighting, modality
-validation, bootstrap discounts, and agent checkpoint restoration. The
-repository audit records the CPU collection smokes, current capability matrix,
-and recommended validation for future algorithm and loss contributions.
+The manuscript is a nested Git checkout tracked as a gitlink, but the root has
+no `.gitmodules` mapping. Review its diff separately and preserve/publish its
+changes explicitly; a root-only diff does not contain `main.tex`. This review
+leaves repository wiring unchanged.
+
+## Verification
+
+Baseline: 9 failed / 27 passed. Final: **94 RL tests passed**, including two
+12-step CPU collection/evaluation/checkpoint tests with K=3 and U=2. All 13 RL
+presets and three override scenarios compose. Real Reacher probes verify
+visibility across resets and 36px RGB rendering. Ruff, shell syntax, whitespace,
+strict MkDocs build, and LaTeX compilation pass. No long training was launched.
+Exact commands and probe scripts are in the [audit](rl_repository_audit.md#verification).

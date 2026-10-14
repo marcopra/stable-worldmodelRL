@@ -42,6 +42,7 @@ def test_sac_taco_update_has_explicit_gradient_ownership():
         taco_horizon=2,
         taco_feature_dim=8,
         taco_hidden_dim=16,
+        sequence_length=2,
     )
     batch_size, horizon = 8, 2
     batch = {

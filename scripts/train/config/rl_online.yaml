@@ -63,9 +63,8 @@ mpc:
   max_std: 0.5
   temperature: 0.5
   exploration_noise: 1.0
-  # Set to 0 to disable the TD-MPC2-style value-prediction objective and
-  # terminal bootstrap. A non-zero default keeps MPC's finite-horizon plans
-  # bootstrapped with the value of the predicted terminal WM latent.
+  # A positive weight trains an auxiliary reward-return value head. At 0,
+  # MPC bootstraps from the base critic on the shared WM latent instead.
   value_coef: 0.1
   value_hidden_dim: 256
   value_num_bins: 101

@@ -8,11 +8,10 @@ from dm_control.suite import reacher
 from dm_control.suite.wrappers import action_scale
 
 from stable_worldmodel import spaces as swm_spaces
-from stable_worldmodel.envs.dmcontrol.dmcontrol import DMControlWrapper
 from stable_worldmodel.envs.dmcontrol.custom_tasks.reacher import (
     ReacherQPosMatchTask,
 )
-
+from stable_worldmodel.envs.dmcontrol.dmcontrol import DMControlWrapper
 
 _DEFAULT_TIME_LIMIT = 20
 
@@ -30,8 +29,15 @@ _TASK_TARGET_SIZES = {
 
 class ReacherDMControlWrapper(DMControlWrapper):
     def __init__(
-        self, task='hard', seed=None, environment_kwargs=None, render_mode=None
+        self,
+        task='hard',
+        seed=None,
+        environment_kwargs=None,
+        render_mode=None,
+        render_target=False,
     ):
+        if not isinstance(render_target, bool):
+            raise TypeError('render_target must be a boolean')
         if task not in _TASKS:
             raise ValueError(
                 f"Unknown task '{task}'. Must be one of {list(_TASKS)}"
@@ -110,7 +116,11 @@ class ReacherDMControlWrapper(DMControlWrapper):
                     }
                 ),
                 'rendering': swm_spaces.Dict(
-                    {'render_target': swm_spaces.Discrete(2, init_value=0)}
+                    {
+                        'render_target': swm_spaces.Discrete(
+                            2, init_value=int(render_target)
+                        )
+                    }
                 ),
                 'light': swm_spaces.Dict(
                     {

@@ -73,6 +73,7 @@ case ${WM_LOSS} in
     ;;
   consistency)
     auxiliary_overrides+=(
+      auxiliary.wm.horizon=1
       auxiliary.wm.projection_dim=128
       auxiliary.wm.hidden_dim=256
       auxiliary.wm.rho=0.5
@@ -89,7 +90,7 @@ if [[ "${MPC_ENABLED}" == true ]]; then
       exit 2
       ;;
   esac
-  run_id="${run_id}-mpc"
+  run_id="${run_id}-mpc-reward-td-v2"
   mpc_horizon="${MPC_HORIZON:-5}"
   mpc_sequence_length="${MPC_SEQUENCE_LENGTH:-${mpc_horizon}}"
   mpc_overrides=(
@@ -106,6 +107,7 @@ if [[ "${MPC_ENABLED}" == true ]]; then
     auxiliary.sequence_length="${mpc_sequence_length}"
     auxiliary.wm.horizon=1
     auxiliary.reward_prediction.mode=per_step
+    auxiliary.reward_prediction.horizon=1
   )
   mpc_tag=mpc
 else

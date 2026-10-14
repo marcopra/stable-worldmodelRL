@@ -18,7 +18,7 @@ set -u
 export HYDRA_FULL_ERROR=1
 export PYTHONPATH="$SLURM_SUBMIT_DIR:${PYTHONPATH:-}"
 
-run_id="sac-state-mpc-sweep-1m-slurm-v1"
+run_id="sac-state-mpc-sweep-1m-slurm-reward-td-v2"
 run_name="${run_id}-${ENV_KEY}-${WM_LOSS}-seed-${SEED}"
 run_group="${run_id}-${ENV_KEY}"
 checkpoint_dir="./runs/rl/${run_id}/${ENV_KEY}/${WM_LOSS}/seed_${SEED}"

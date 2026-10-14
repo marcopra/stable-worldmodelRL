@@ -34,7 +34,6 @@ nav:
       - guides/online_learning.md
   - Online RL:
       - Representation objectives: rl_representation_learning.md
-      - SAC + TACO (state): rl_sac_taco_state.md
       - Reacher Hard benchmark: rl_reacher_hard_benchmark.md
       - Repository audit: rl_repository_audit.md
       - SWE handoff: rl_swe_handoff.md

@@ -8,6 +8,8 @@ defaults:
 env: swm/ReacherDMControl-v0
 env_kwargs:
   task: hard
+  # Required for the visual task: the wrapper otherwise hides the target.
+  render_target: true
 observation:
   frame_stack: 3
 max_episode_steps: 500

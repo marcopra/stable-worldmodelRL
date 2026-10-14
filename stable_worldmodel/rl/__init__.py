@@ -5,8 +5,8 @@ from .algorithms.legacy_taco import TACOStateObjective
 from .augmentation import RandomShiftsAug
 from .representation import (
     AuxiliaryLosses,
-    CURLRepresentation,
     ConsistencyRepresentation,
+    CURLRepresentation,
     InfoNCERepresentation,
     JEPATemporalRepresentation,
     LeWMTemporalRepresentation,

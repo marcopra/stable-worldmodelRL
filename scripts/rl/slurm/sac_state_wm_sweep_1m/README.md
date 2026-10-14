@@ -7,9 +7,10 @@ bash scripts/rl/slurm/sac_state_wm_sweep_1m/launcher.sh
 ```
 
 The launcher loops over seeds, WM loss settings, and environments, then
-submits one `base.sh` job per combination. Defaults here are seeds 11–15,
-`none`/InfoNCE/LeWM, and Finger Turn Hard, Acrobot Swingup, Reacher Hard, and
-Pendulum Control (100 jobs).
+submits one `base.sh` job per combination. Defaults are seeds 11–15,
+`none`/InfoNCE/LeWM, and Reacher Hard (15 jobs). Finger Turn Hard, Acrobot
+Swingup, and Pendulum Control are commented out in the launcher. Enabling all
+four tasks gives 60 jobs with these three losses.
 
 The four environments use state observations. WM jobs also enable reward
 prediction (weight 1, horizon 3); CURL is disabled. Each job trains for 1M
@@ -30,4 +31,8 @@ iterations. Replay sequence length `U` and planner horizon `K` are configured
 independently; `U` defaults to `K`. Override these defaults with
 `MPC_HORIZON`, `MPC_SEQUENCE_LENGTH`, `MPC_VALUE_COEF`, `MPC_NUM_SAMPLES`,
 `MPC_NUM_ELITES`, `MPC_ITERATIONS`, `MPC_NUM_PI_TRAJS`, or `MPC_START_STEPS`.
-MPC runs get a separate run and checkpoint directory with the `-mpc` suffix.
+MPC runs get a separate run and checkpoint directory with the
+`-mpc-reward-td-v2` suffix. The separate latent value head learns reward-only
+TD targets; the SAC critic retains its soft target. Prior MPC heads require
+retraining, and checkpoints without the new readiness/objective metadata
+are rejected.

@@ -10,12 +10,13 @@ from torch.nn import functional as F
 
 from ..augmentation import RandomShiftsAug
 from ..encoders import make_observation_encoder, pixel_batch_to_nchw
-from ..mpc import LatentMPCPlanner, ValuePredictionHead
+from ..mpc import (
+    LatentMPCPlanner,
+    ValuePredictionHead,
+    validate_mpc_config,
+    validate_mpc_models,
+)
 from ..representation import (
-    ConsistencyRepresentation,
-    InfoNCERepresentation,
-    LeWMTemporalRepresentation,
-    RewardPredictionRepresentation,
     build_auxiliary_losses,
     validate_world_model_config,
 )
@@ -74,9 +75,10 @@ class Critic(nn.Module):
 class DrQV2Agent:
     """DrQ-v2 actor/critic with an optional temporal representation objective.
 
-    The critic optimizer owns encoder gradients, matching DrQ-v2. Actor inputs
-    are detached. An enabled auxiliary objective has a separate optimizer that
-    updates the shared encoder and its own prediction modules.
+    The critic optimizer owns encoder gradients, matching DrQ-v2, and also owns
+    the WM projection when MPC is enabled. Actor inputs are detached. An enabled
+    auxiliary objective has a separate optimizer over the shared encoder,
+    projection, and its own prediction modules.
     """
 
     def __init__(
@@ -120,7 +122,9 @@ class DrQV2Agent:
             raise ValueError('auxiliary.sequence_length must be >= 1')
         self.stddev = float(stddev)
         self.stddev_final = float(stddev_final)
-        self.stddev_schedule_steps = max(1, int(stddev_schedule_steps))
+        self.stddev_schedule_steps = int(stddev_schedule_steps)
+        if self.stddev_schedule_steps < 1:
+            raise ValueError('stddev_schedule_steps must be positive')
         self.stddev_clip = float(stddev_clip)
         self.num_expl_steps = int(num_expl_steps)
         self.tau = float(critic_target_tau)
@@ -228,65 +232,44 @@ class DrQV2Agent:
             else 0.0
         )
 
+        self.mpc_config = dict(mpc_config or {})
+        validate_mpc_config(self.mpc_config)
+        self.mpc_enabled = bool(self.mpc_config.get('enabled', False))
+        self.mpc_value_coef = float(self.mpc_config.get('value_coef', 0.1))
+        validate_mpc_models(
+            self.mpc_config,
+            self.world_model,
+            self.reward_prediction,
+            self.auxiliary_losses,
+            self.world_model_weight,
+        )
+        control_feature_dim = (
+            self.world_model.mpc_latent_dim
+            if self.mpc_enabled
+            else repr_dim
+        )
+
         self.actor = Actor(
-            repr_dim, self.action_dim, feature_dim, hidden_dim
+            control_feature_dim, self.action_dim, feature_dim, hidden_dim
         ).to(self.device)
         self.critic = Critic(
-            repr_dim, self.action_dim, feature_dim, hidden_dim
+            control_feature_dim, self.action_dim, feature_dim, hidden_dim
         ).to(self.device)
         self.critic_target = copy.deepcopy(self.critic).to(self.device)
         for parameter in self.critic_target.parameters():
             parameter.requires_grad_(False)
 
-        self.encoder_opt = torch.optim.Adam(self.encoder.parameters(), lr=lr)
+        encoder_parameters = list(self.encoder.parameters())
+        if self.mpc_enabled:
+            encoder_parameters.extend(self.world_model.projector.parameters())
+        self.encoder_opt = torch.optim.Adam(encoder_parameters, lr=lr)
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=lr)
-        self.mpc_config = dict(mpc_config or {})
-        self.mpc_enabled = bool(self.mpc_config.get('enabled', False))
-        self.mpc_value_coef = float(self.mpc_config.get('value_coef', 0.1))
-        if self.mpc_value_coef < 0:
-            raise ValueError('mpc.value_coef must be non-negative')
+        self.mpc_model_updates = 0
         self.mpc_value = None
         self.mpc_value_target = None
         self.mpc_planner = None
         if self.mpc_enabled:
-            if not isinstance(
-                self.world_model,
-                (
-                    InfoNCERepresentation,
-                    LeWMTemporalRepresentation,
-                    ConsistencyRepresentation,
-                ),
-            ):
-                raise ValueError(
-                    'MPC requires an action-conditioned one-step WM '
-                    '(wm.target=infonce, lewm, or consistency)'
-                )
-            if not isinstance(
-                self.reward_prediction, RewardPredictionRepresentation
-            ):
-                raise ValueError(
-                    'MPC requires the existing auxiliary reward-prediction '
-                    'loss to be enabled'
-                )
-            if self.auxiliary_losses.reward_prediction_weight <= 0:
-                raise ValueError(
-                    'MPC requires auxiliary.reward_prediction.weight > 0'
-                )
-            if self.world_model_weight <= 0:
-                raise ValueError(
-                    'MPC requires auxiliary.wm.weight > 0'
-                )
-            if self.reward_prediction.mode != 'per_step':
-                raise ValueError(
-                    "MPC requires auxiliary.reward_prediction.mode='per_step'"
-                )
-            if self.world_model.horizon != 1:
-                raise ValueError(
-                    'MPC world-model prediction horizon must be 1; set '
-                    'auxiliary.wm.horizon=1 and use auxiliary.sequence_length '
-                    'for replay rollouts'
-                )
             if self.mpc_value_coef > 0:
                 self.mpc_value = ValuePredictionHead(
                     self.world_model.mpc_latent_dim,
@@ -356,7 +339,11 @@ class DrQV2Agent:
         noise = torch.randn_like(mean) * std
         if noise_clip is not None:
             noise = noise.clamp(-noise_clip, noise_clip)
-        return (mean + noise).clamp(-1.0, 1.0)
+        action = mean + noise
+        # Match DrQ-v2's TruncatedNormal: bounded forward values with an
+        # identity gradient through the clamp for the actor update.
+        bounded = action.clamp(-1.0 + 1e-6, 1.0 - 1e-6)
+        return action - action.detach() + bounded.detach()
 
     def _as_nchw(self, obs: torch.Tensor) -> torch.Tensor:
         if self.observation_mode == 'pixels':
@@ -368,6 +355,11 @@ class DrQV2Agent:
         flat = observations.flatten(0, 1)
         encoded = self.encoder(self._as_nchw(flat))
         return encoded.reshape(batch, time, -1)
+
+    def _control_features(self, features: torch.Tensor) -> torch.Tensor:
+        if self.mpc_enabled:
+            return self.world_model.encode_mpc_latent(features)
+        return features
 
     def _mpc_value_loss(
         self,
@@ -389,25 +381,21 @@ class DrQV2Agent:
         total = features.new_zeros(())
         rho = float(self.mpc_config.get('rho', 0.5))
         for index in range(sequence_length):
-            current_latent = self.world_model.encode_mpc_latent(
-                features[:, index]
-            )
+            current_latent = self._control_features(features[:, index])
             with torch.no_grad():
-                next_feature = features[:, index + 1].detach()
+                next_feature = self._control_features(
+                    features[:, index + 1].detach()
+                )
                 mean, std = self.actor(next_feature, self._stddev(step))
-                next_action = self._sample_action(
-                    mean, std, self.stddev_clip
-                )
-                next_latent = self.world_model.encode_mpc_latent(next_feature)
+                next_action = self._sample_action(mean, std, self.stddev_clip)
                 target_q1, target_q2 = self.mpc_value_target(
-                    next_latent, next_action
+                    next_feature, next_action
                 )
-                target = (
-                    rewards[:, index].reshape(-1, 1)
-                    + self.discount
-                    * discounts[:, index].reshape(-1, 1)
-                    * torch.minimum(target_q1, target_q2)
-                )
+                target = rewards[:, index].reshape(
+                    -1, 1
+                ) + self.discount * discounts[:, index].reshape(
+                    -1, 1
+                ) * torch.minimum(target_q1, target_q2)
             total = total + rho**index * self.mpc_value.loss(
                 current_latent, actions[:, index], target
             )
@@ -420,20 +408,27 @@ class DrQV2Agent:
                 obs = obs.unsqueeze(0)
             elif self.observation_mode == 'state':
                 obs = obs.float().reshape(1, -1)
-            feature = self.encoder(self._as_nchw(obs))
+            feature = self._control_features(
+                self.encoder(self._as_nchw(obs))
+            )
             mpc_start_step = max(
                 self.num_expl_steps,
                 int(self.mpc_config.get('start_steps', 0)),
             )
             if self.mpc_enabled and step >= mpc_start_step:
+                if self.mpc_model_updates == 0:
+                    raise RuntimeError(
+                        'MPC requires a trained WM/reward model; no auxiliary '
+                        'updates have completed. Increase mpc.start_steps.'
+                    )
                 action = self.mpc_planner.plan(
                     feature,
                     self.world_model,
                     self.reward_prediction,
-                    lambda latent: self._planner_policy_action(
-                        latent, step, eval_mode
+                    lambda feature: self._planner_policy_action(
+                        feature, step, eval_mode
                     ),
-                    self.mpc_value,
+                    lambda latent: self._mpc_terminal_value(latent, step),
                     discount=self.discount,
                     eval_mode=eval_mode,
                 ).unsqueeze(0)
@@ -455,6 +450,17 @@ class DrQV2Agent:
             return mean, None
         return self._sample_action(mean, std), None
 
+    def _mpc_terminal_value(
+        self, latent: torch.Tensor, step: int
+    ) -> torch.Tensor:
+        mean, std = self.actor(latent, self._stddev(step))
+        action = self._sample_action(mean, std, self.stddev_clip)
+        if self.mpc_value is not None:
+            q1, q2 = self.mpc_value(latent, action)
+            return 0.5 * (q1 + q2)
+        q1, q2 = self.critic(latent, action)
+        return torch.minimum(q1, q2)
+
     def reset(self) -> None:
         """Reset episode-scoped planner state."""
         if self.mpc_planner is not None:
@@ -473,6 +479,19 @@ class DrQV2Agent:
         actions = batch['action'].to(self.device).float()
         rewards = batch['reward'].to(self.device).float()
         discounts = batch['discount'].to(self.device).float()
+        if obs_seq.ndim < 3 or actions.ndim != 3:
+            raise ValueError(
+                'replay observations/actions must be temporal batches'
+            )
+        required = max(
+            self.nstep,
+            self.auxiliary_horizon if self.auxiliary_losses else 1,
+        )
+        if obs_seq.shape[1] < required + 1 or actions.shape[1] < required:
+            raise ValueError(
+                f'Replay batch needs {required + 1} observations and '
+                f'{required} actions for the configured losses'
+            )
         # The final frame has no outgoing action/reward. Collector writes a
         # harmless sentinel there to keep every episode column aligned.
         obs = self._as_nchw(obs_seq[:, 0])
@@ -480,7 +499,7 @@ class DrQV2Agent:
         if self.observation_mode == 'pixels':
             obs = self.aug(obs.float())
             next_obs = self.aug(next_obs.float())
-        obs_feature = self.encoder(obs)
+        obs_feature = self._control_features(self.encoder(obs))
         reward_discount = torch.ones_like(rewards[:, 0:1])
         nstep_reward = torch.zeros_like(rewards[:, 0:1])
         for index in range(self.nstep):
@@ -493,7 +512,7 @@ class DrQV2Agent:
                 * discounts[:, index : index + 1]
             )
         with torch.no_grad():
-            next_feature = self.encoder(next_obs)
+            next_feature = self._control_features(self.encoder(next_obs))
             mean, std = self.actor(next_feature, self._stddev(step))
             next_action = self._sample_action(mean, std, self.stddev_clip)
             target_q1, target_q2 = self.critic_target(
@@ -547,8 +566,7 @@ class DrQV2Agent:
             temporal = self.encoder(temporal_input).view(
                 obs_seq.shape[0], h + 1, -1
             )
-            if self.world_model_opt is None:
-                raise RuntimeError('world-model optimizer missing')
+            assert self.world_model_opt is not None
             self.world_model_opt.zero_grad(set_to_none=True)
             with torch.no_grad():
                 target_input = self._as_nchw(temporal_observations)
@@ -582,6 +600,8 @@ class DrQV2Agent:
                 )
             weighted_loss.backward()
             self.world_model_opt.step()
+            if self.mpc_enabled:
+                self.mpc_model_updates += 1
             if self.mpc_value_target is not None:
                 with torch.no_grad():
                     for source, target in zip(
@@ -636,9 +656,31 @@ class DrQV2Agent:
                 if self.mpc_value_target is not None
                 else None
             ),
+            'mpc_model_updates': self.mpc_model_updates,
+            'mpc_value_objective': 'reward_td_v1',
+            'mpc_control_features': (
+                'wm_latent_v1' if self.mpc_enabled else 'encoder_v1'
+            ),
         }
 
     def load_state_dict(self, state: dict) -> None:
+        if self.mpc_enabled:
+            if state.get('mpc_control_features') != 'wm_latent_v1':
+                raise ValueError(
+                    'MPC checkpoint must use the WM-latent critic input'
+                )
+            if 'mpc_model_updates' not in state:
+                raise ValueError('MPC checkpoint has no model-update count')
+            if (
+                self.mpc_value is not None
+                and state.get('mpc_value_objective') != 'reward_td_v1'
+            ):
+                raise ValueError(
+                    'MPC checkpoint must use reward_td_v1 targets'
+                )
+            self.mpc_model_updates = int(state['mpc_model_updates'])
+            if self.mpc_model_updates < 0:
+                raise ValueError('MPC model-update count must be non-negative')
         self.encoder.load_state_dict(state['encoder'])
         self.actor.load_state_dict(state['actor'])
         self.critic.load_state_dict(state['critic'])
@@ -684,7 +726,9 @@ class DrQV2Agent:
         if self.mpc_value is not None:
             mpc_value_state = state.get('mpc_value')
             if mpc_value_state is None:
-                raise ValueError('Checkpoint has no MPC value-prediction state')
+                raise ValueError(
+                    'Checkpoint has no MPC value-prediction state'
+                )
             self.mpc_value.load_state_dict(mpc_value_state)
             target_state = state.get('mpc_value_target')
             if target_state is None:

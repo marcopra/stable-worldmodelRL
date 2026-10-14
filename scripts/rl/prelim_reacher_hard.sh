@@ -3,8 +3,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 script_path="${repo_root}/scripts/rl/prelim_reacher_hard.sh"
-log_root="${repo_root}/logs/rl/prelim_reacher_hard_36px"
-run_root="${repo_root}/runs/prelim_reacher_hard_36px"
+log_root="${repo_root}/logs/rl/prelim_reacher_hard_visible_36px_v2"
+run_root="${repo_root}/runs/prelim_reacher_hard_visible_36px_v2"
 gpu_none="${GPU_NONE:-0}"
 gpu_infonce="${GPU_INFONCE:-5}"
 
@@ -22,6 +22,7 @@ worker() {
     loss_overrides=(
       auxiliary.enabled=true
       wm=infonce
+      auxiliary.sequence_length=3
       auxiliary.reward_prediction.enabled=false
       auxiliary.curl.enabled=false
     )

@@ -125,7 +125,7 @@ case "${mode}" in
         ;;
     esac
     run_tag=mpc_retest
-    run_id=sac-state-mpc-loss-retest-v2
+    run_id=sac-state-mpc-loss-retest-reward-td-v3
     ;;
   *)
     echo "MODE must be taco or mpc, got ${mode}" >&2

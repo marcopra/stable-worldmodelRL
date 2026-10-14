@@ -92,7 +92,16 @@ Reference implementations are provided in [`scripts/train/`](scripts/train): [`l
   <em>GPU utilization for LeWM trained with  Push-T LanceDB dataset on a H200 GPU.</em>
 </p>
 
+## Online reinforcement learning
+
+The native online RL runner supports SAC and DrQ-v2 with state or pixel inputs,
+selectable TACO auxiliary objectives, and optional TACO-MPC planning. See the
+[online RL guide](docs/rl_representation_learning.md),
+[implementation audit](docs/rl_repository_audit.md), and
+[SWE handoff](docs/rl_swe_handoff.md) for configuration, evidence, and limitations.
+
 ## Data Formats
+
 
 Recording, loading, and conversion all go through a small **format registry**. Pick the backend that matches your trade-off, or [register your own](https://galilai-group.github.io/stable-worldmodel/api/dataset/#registering-a-custom-format).
 

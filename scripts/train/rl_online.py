@@ -219,7 +219,6 @@ def _make_agent(cfg, observation_shape: tuple[int, ...], action_dim: int):
     mpc_config = _mpc_config(cfg)
     common = {
         'obs_shape': observation_shape,
-        'action_dim': action_dim,
         'observation_mode': str(cfg.observation.mode),
         'device': str(cfg.device),
         'hidden_dim': int(cfg.agent.hidden_dim),
@@ -236,6 +235,7 @@ def _make_agent(cfg, observation_shape: tuple[int, ...], action_dim: int):
     if cfg.algorithm.name == 'sac':
         return SACAgent(
             **common,
+            action_dim=action_dim,
             lr=float(cfg.agent.lr),
             alpha_lr=float(cfg.agent.alpha_lr),
             tau=float(cfg.agent.tau),
@@ -248,26 +248,15 @@ def _make_agent(cfg, observation_shape: tuple[int, ...], action_dim: int):
         )
     if cfg.algorithm.name == 'drqv2':
         return DrQV2Agent(
-            obs_shape=observation_shape,
+            **common,
             action_shape=(action_dim,),
-            observation_mode=str(cfg.observation.mode),
-            device=str(cfg.device),
             lr=float(cfg.agent.lr),
-            feature_dim=int(cfg.agent.feature_dim),
-            hidden_dim=int(cfg.agent.hidden_dim),
             critic_target_tau=float(cfg.agent.critic_target_tau),
-            discount=float(cfg.agent.discount),
             stddev=float(cfg.agent.stddev),
             stddev_final=float(cfg.agent.stddev_final),
             stddev_schedule_steps=int(cfg.agent.stddev_schedule_steps),
             stddev_clip=float(cfg.agent.stddev_clip),
             num_expl_steps=int(cfg.agent.num_expl_steps),
-            auxiliary_enabled=bool(cfg.auxiliary.enabled),
-            world_model_config=world_model_config,
-            reward_prediction_config=reward_prediction_config,
-            curl_config=curl_config,
-            mpc_config=mpc_config,
-            augmentation_pad=int(cfg.agent.augmentation_pad),
             nstep=int(cfg.agent.nstep),
         )
     raise ValueError(f'Unknown algorithm {cfg.algorithm.name!r}')

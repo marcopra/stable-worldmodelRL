@@ -60,8 +60,8 @@ run_one() {
   local seed="$2"
   local method="$3"
   local run_name="reacher-hard-${method}-seed-${seed}"
-  local log_path="logs/rl/reacher_hard_taco/${run_name}.log"
-  local checkpoint_dir="runs/reacher_hard_taco/${method}/seed_${seed}"
+  local log_path="logs/rl/reacher_hard_visible_v4/${run_name}.log"
+  local checkpoint_dir="runs/reacher_hard_visible_v4/${method}/seed_${seed}"
   local loss_overrides=()
   case "${method}" in
     none)
@@ -76,7 +76,8 @@ run_one() {
       loss_overrides=(
         auxiliary.enabled=true
         "wm=${method}"
-        wm.horizon=3
+        auxiliary.wm.horizon=3
+        auxiliary.sequence_length=3
         auxiliary.reward_prediction.enabled=false
         auxiliary.curl.enabled=false
       )
@@ -97,7 +98,7 @@ run_one() {
     "device=cuda:0" \
     "${loss_overrides[@]}" \
     "wandb.name=${run_name}" \
-    "wandb.group=taco-reacher-hard-3methods-5seeds-ordered-v3" \
+    "wandb.group=taco-reacher-hard-visible-3methods-5seeds-v4" \
     "checkpoint_dir=${checkpoint_dir}" \
     2>&1 | tee "$log_path"; then
     echo "[GPU ${gpu}] completed ${run_name}"
