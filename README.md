@@ -3,7 +3,7 @@
 <p align="center"><i>A platform for reproducible world model research and evaluation.</i></p>
 
 <p align="center">
-  <a href="https://galilai-group.github.io/stable-worldmodel/"><img alt="Documentation" src="https://img.shields.io/badge/Docs-blue.svg"/></a>
+  <a href="https://marcopra.github.io/stable-worldmodelRL/"><img alt="Documentation" src="https://img.shields.io/badge/Docs-blue.svg"/></a>
   <a href="https://github.com/galilai-group/stable-worldmodel"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/galilai-group/stable-worldmodel/tests.yaml?label=Tests"/></a>
   <a href="https://pypi.python.org/pypi/stable-worldmodel/#history"><img alt="PyPI" src="https://img.shields.io/pypi/v/stable-worldmodel.svg"/></a>
   <a href="https://arxiv.org/abs/2605.21800v1" target="_blank" style="margin: 2px;"><img alt="ArXiv" src="https://img.shields.io/badge/arXiv-2605.21800-b5212f?logo=arxiv" style="display: inline-block; vertical-align: middle;"/></a>
@@ -17,7 +17,7 @@
   <a href="#quick-start"><b>Quick Start</b></a> ·
   <a href="#environments"><b>Environments</b></a> ·
   <a href="#solvers-and-baselines"><b>Solvers & Baselines</b></a> ·
-  <a href="https://galilai-group.github.io/stable-worldmodel/"><b>Documentation</b></a> ·
+  <a href="https://marcopra.github.io/stable-worldmodelRL/"><b>Documentation</b></a> ·
   <a href="https://arxiv.org/abs/2605.21800v1"><b>Paper</b></a> ·
   <a href="#citation"><b>Citation</b></a>
 </p>
@@ -283,7 +283,23 @@ swm convert pusht_expert_train --dest-format video  # convert a dataset to anoth
 
 ## Documentation
 
-The full documentation lives at [galilai-group.github.io/stable-worldmodel](https://galilai-group.github.io/stable-worldmodel/), with API references, tutorials, and guides.
+The full documentation lives at [marcopra.github.io/stable-worldmodelRL](https://marcopra.github.io/stable-worldmodelRL/), with API references, tutorials, and guides.
+
+To preview the documentation locally, activate the `swm-rl` Conda environment
+from the repository root and install the documentation dependencies. They are
+also listed in `swm-rl.yml` for new environment setups:
+
+```bash
+conda activate swm-rl
+python -m pip install mkdocs-shadcn 'mkdocstrings[python]' pymdown-extensions
+python -m mkdocs serve --livereload
+```
+
+Open `http://127.0.0.1:8000`. To check the production build locally, run
+`python -m mkdocs build --strict`. Pushes to `main` build and publish
+the site through GitHub Actions. For a fork, enable **Settings → Pages → Build
+and deployment → Source → GitHub Actions**; this checkout publishes to
+`https://marcopra.github.io/stable-worldmodelRL/`.
 
 ## Built on `stable-worldmodel`
 

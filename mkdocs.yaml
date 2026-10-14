@@ -1,7 +1,7 @@
 site_name: stable-worldmodel
 
-site_url: https://galilai-group.github.io/stable-worldmodel/
-repo_url: https://github.com/galilai-group/stable-worldmodel
+site_url: https://marcopra.github.io/stable-worldmodelRL/
+repo_url: https://github.com/marcopra/stable-worldmodelRL
 use_directory_urls: true
 
 theme:
@@ -32,6 +32,12 @@ nav:
   - Guides:
       - guides/checkpoints.md
       - guides/online_learning.md
+  - Online RL:
+      - Representation objectives: rl_representation_learning.md
+      - SAC + TACO (state): rl_sac_taco_state.md
+      - Reacher Hard benchmark: rl_reacher_hard_benchmark.md
+      - Repository audit: rl_repository_audit.md
+      - SWE handoff: rl_swe_handoff.md
   - cli.md
   - Tutorial:
       - tutorial/collect_data.md
